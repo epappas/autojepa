@@ -12,6 +12,7 @@ from typing import Any
 from autojepa.policy._prompt_fragments import (
     BATCH_DIVERSITY_RULES,
     CANCELLATION_CONTEXT_RULES,
+    JEPA_HARD_RULES,
     PROGRESS_PROTOCOL_RULES,
     render_progress_series,
     render_progress_summary,
@@ -25,13 +26,15 @@ _MAX_CONVERSATION_PAIRS = 10
 
 
 _SYSTEM_PROMPT = (
-    "You are a hyperparameter optimization assistant. "
-    "Given a search space and experiment history, propose the next set of "
-    "hyperparameters to try. Respond with ONLY a JSON object mapping "
-    "parameter names to values from the allowed choices.\n\n"
+    "You are a hyperparameter optimization assistant for AutoJEPA, a "
+    "self-supervised JEPA pretraining framework. Given a search space and "
+    "experiment history, propose the next set of hyperparameters to try. "
+    "Respond with ONLY a JSON object mapping parameter names to values "
+    "from the allowed choices.\n\n"
     f"{PROGRESS_PROTOCOL_RULES}\n\n"
     f"{CANCELLATION_CONTEXT_RULES}\n\n"
-    f"{BATCH_DIVERSITY_RULES}"
+    f"{BATCH_DIVERSITY_RULES}\n\n"
+    f"{JEPA_HARD_RULES}"
 )
 
 

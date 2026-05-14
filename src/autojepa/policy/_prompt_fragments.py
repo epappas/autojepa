@@ -40,6 +40,46 @@ BATCH_DIVERSITY_RULES = (
 )
 
 
+JEPA_HARD_RULES = (
+    "JEPA HARD RULES\n"
+    "These invariants are non-negotiable. Diffs that violate them are rejected\n"
+    "by the AST validator before training runs.\n"
+    "\n"
+    "Collapse gates (writeup §6.4 program.md template):\n"
+    "  - latent_variance < 0.3        -> trial hard-fails before probe-eval\n"
+    "  - effective_rank   < 32        -> trial hard-fails\n"
+    "  - rankme           < 64        -> trial hard-fails\n"
+    "  - lidar            < 80        -> trial hard-fails\n"
+    "These are NOT objectives to optimise. They are floor conditions; a trial\n"
+    "that scores below them is discarded regardless of probe_auroc.\n"
+    "\n"
+    "Architecture invariants (rejected by validator if violated):\n"
+    "  - Do NOT enable gradients on the EMA target encoder. The target is a\n"
+    "    stop-gradient EMA of the student; backprop through it defeats JEPA\n"
+    "    (see autojepa.models.ema.assert_no_grad_on_target).\n"
+    "  - Do NOT make the predictor (Psi) deeper or wider than the context\n"
+    "    encoder (Phi_c). Predictor capacity above the encoder reliably\n"
+    "    induces representation collapse.\n"
+    "  - Do NOT remove anti-collapse regularisers (VICReg variance/covariance\n"
+    "    terms, Barlow off-diagonal, DINO-center). The default loss in\n"
+    "    autojepa.models.losses is VICReg per C-JEPA — replacing it with\n"
+    "    plain L2 is acceptable only if a different anti-collapse defense\n"
+    "    is added in the same diff.\n"
+    "\n"
+    "Required runtime calls (validator enforces presence in train.py):\n"
+    "  - emit_progress(step, step_target, metrics={\"probe_auroc\": ...})\n"
+    "  - target_encoder.update_ema()      every optimizer step\n"
+    "\n"
+    "High-value diff targets (ranked by ROI, writeup §6.4):\n"
+    "  1. Masking strategies — compose autojepa.masking primitives\n"
+    "     (MultiBlockInfillMask, CompositeMask)\n"
+    "  2. Loss formulations — switch via autojepa.models.losses.LOSS_REGISTRY\n"
+    "     (vicreg, barlow_twins, byol, dino_v1, ntxent, l1, l2)\n"
+    "  3. EMA / target update — momentum schedule, refresh cadence\n"
+    "  4. Curriculum — mask ratio over training, sequence length annealing"
+)
+
+
 def render_progress_summary(history: list[dict]) -> str:
     """Render a one-paragraph cancellation summary from history. Empty if none."""
     cancelled = [h for h in history if h.get("status") == "cancelled"]

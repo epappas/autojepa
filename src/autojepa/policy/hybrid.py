@@ -24,10 +24,15 @@ class HybridPolicy:
         param_policy: LLMParamPolicy,
         diff_policy: LLMDiffPolicy,
         *,
-        param_explore_iters: int = 5,
-        stall_threshold: int = 3,
-        diff_failure_limit: int = 3,
+        param_explore_iters: int = 25,
+        stall_threshold: int = 5,
+        diff_failure_limit: int = 5,
     ) -> None:
+        # AutoJEPA defaults are wider than upstream autoresearch-rl
+        # (5 / 3 / 3) per writeup §6.3: SSL has a wider design space
+        # than supervised fine-tuning so the hybrid policy stays in
+        # param-exploration mode longer before switching to diff mode.
+        # See ADR-008 for the related forecaster recalibration.
         self._param_policy = param_policy
         self._diff_policy = diff_policy
         self._param_explore_iters = param_explore_iters

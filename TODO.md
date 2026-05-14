@@ -64,10 +64,11 @@
 ### Config / `program.md` template
 
 - [x] Default `objective.metric: probe_auroc`, `direction: max` (ADR-004)
-- [ ] Hybrid widened: `hybrid_param_explore_iters: 25`, `hybrid_stall_threshold: 5` — needs `policy/hybrid.py` config inspection (batch 5)
-- [ ] Param dims expanded to 10-12 JEPA-relevant dims — touches `policy/_prompt_fragments.py` (batch 5)
-- [ ] `program.md` template encoding hard rules (latent_var<0.3, eff_rank<32, RankMe<64, LiDAR<80 → fail; forbid removing EMA stop_gradient; forbid Ψ deeper than Φc) — Phase 2 (used by `examples/ijepa-cifar10/program.md`)
-- [ ] Storage policy: `keep_top_k=5`, encoder-only archive, prune>7d — touches `telemetry/` and config (batch 5 or Phase-4 hardening)
+- [x] Hybrid widened: `param_explore_iters` 5→25, `stall_threshold` 3→5, `diff_failure_limit` 3→5 (writeup §6.3 / §12.5). Tests in `tests/test_hybrid_jepa_defaults.py`
+- [x] `JEPA_HARD_RULES` prompt fragment encoding the full §6.4 program.md invariants (collapse thresholds, forbid target-encoder grads, forbid Ψ over-capacity, forbid removing anti-collapse regularisers, required runtime calls, high-value diff targets) — wired into both `llm_diff._SYSTEM_PROMPT` and `llm_search._SYSTEM_PROMPT`. Tests in `tests/test_jepa_prompt_fragments.py`
+- [ ] Per-example `program.md` template — Phase 2 (used by `examples/ijepa-cifar10/program.md`)
+- [ ] Param dims expanded to 10-12 JEPA-relevant dims (lr, EMA_start/end, mask_ratio_max, λ_var, λ_cov, predictor_depth/width, target/context_block_scale, loss_type, seed_count) — surfaced in per-example config, not framework default
+- [ ] Storage policy: `keep_top_k=5`, encoder-only archive, prune>7d — touches `telemetry/` and config (Phase-4 hardening)
 
 **Deliverable**: importable Python library; no working example yet.
 

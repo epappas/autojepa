@@ -14,6 +14,7 @@ import re
 
 from autojepa.policy._prompt_fragments import (
     CANCELLATION_CONTEXT_RULES,
+    JEPA_HARD_RULES,
     PROGRESS_PROTOCOL_RULES,
     render_progress_series,
     render_progress_summary,
@@ -34,13 +35,15 @@ _MAX_CORRECTION_RETRIES = 2
 
 
 _SYSTEM_PROMPT = (
-    "You are a code optimization assistant. "
+    "You are a code optimization assistant for AutoJEPA, a self-supervised "
+    "Joint-Embedding Predictive Architecture pretraining framework. "
     "Given a training script, experiment history, and task description, "
     "propose a code modification as a unified diff. "
     "Respond with ONLY a valid unified diff (starting with --- a/ and +++ b/). "
-    "Make targeted, minimal changes to improve the objective metric.\n\n"
+    "Make targeted, minimal changes to improve probe_auroc.\n\n"
     f"{PROGRESS_PROTOCOL_RULES}\n\n"
-    f"{CANCELLATION_CONTEXT_RULES}"
+    f"{CANCELLATION_CONTEXT_RULES}\n\n"
+    f"{JEPA_HARD_RULES}"
 )
 
 
