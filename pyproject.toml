@@ -1,0 +1,57 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "autojepa"
+version = "0.1.0"
+description = "Autonomous design-space search over JEPA pretraining recipes. Basilica-first."
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+  "numpy>=1.24",
+  "pydantic>=2.7",
+  "pyyaml>=6.0",
+  "typer>=0.12",
+  "basilica-sdk>=0.20",
+]
+
+[project.scripts]
+autojepa = "autojepa.cli:app"
+
+[project.optional-dependencies]
+http = [
+  "requests>=2.28",
+]
+chart = [
+  "matplotlib>=3.7",
+]
+jepa = [
+  "torch>=2.4",
+  "lightning>=2.4",
+  "torchmetrics>=1.4",
+  "transformers>=4.44",
+  "webdataset>=0.2",
+]
+dev = [
+  "pytest>=8.0",
+  "ruff>=0.6",
+  "mypy>=1.10",
+]
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+markers = [
+    "integration: marks tests that hit external services (deselect with '-m \"not integration\"')",
+    "basilica: marks tests that require Basilica GPU cloud credentials",
+    "jepa: marks tests that require the [jepa] extra (torch, lightning)",
+]
+
+[tool.ruff]
+line-length = 100
+extend-exclude = ["tests/eval/fixtures"]

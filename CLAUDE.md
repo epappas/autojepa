@@ -1,0 +1,110 @@
+# CLAUDE.md
+
+This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+
+## Build & Development Commands
+
+```bash
+# Install (requires Python >= 3.10, uv is the primary tool)
+uv sync --extra dev
+
+# Optional: Basilica GPU cloud support
+uv sync --extra basilica
+
+# Run tests
+uv run pytest -q                          # all tests
+uv run pytest tests/test_contract.py -q   # single test file
+uv run pytest -k test_name -q             # single test by name
+
+# Lint & type check
+uv run ruff check src/ tests/
+uv run mypy src/
+
+# Run the CLI
+uv run autojepa examples/minimal-trainable-target/config.yaml
+uv run autojepa validate examples/minimal-trainable-target/config.yaml
+uv run autojepa print-config examples/minimal-trainable-target/config.yaml
+uv run autojepa examples/minimal-trainable-target/config.yaml --override controller.max_wall_time_s=10
+```
+
+## Architecture
+
+Two independent loop systems coexist in the codebase:
+
+### 1. Continuous CLI loop (primary, actively used)
+Runtime path: `cli.py` -> `controller/continuous.py` -> `target/*` -> `telemetry/*`
+
+- **Targets** (`target/`): Pluggable adapters implementing `TargetAdapter` protocol (run + eval). Three types:
+  - `CommandTarget`: runs local/Docker commands, injects params via `AR_PARAMS_JSON` and `AR_PARAM_<NAME>` env vars
+  - `HttpTarget`: calls remote endpoints (vLLM/sglang)
+  - `BasilicaTarget` (`target/basilica.py`): deploys each training iteration as a containerized GPU job on Basilica cloud; handles health-check bootstrapping, log polling, and cleanup
+  - Registry in `target/registry.py` builds the correct adapter from config
+- **Pipeline step** (`prepare_cmd`): Optional config field. When set, the target runs `prepare_cmd` once before the iteration loop (CommandTarget) or once per container before `train_cmd` (BasilicaTarget). This is the frozen data/evaluation boundary — `prepare.py` produces data files that `train.py` reads. No Python import between them.
+- **Frozen/mutable boundary**: `prepare.py` (frozen) owns data loading, answer extraction, reward computation, evaluation — "what is correct". `train.py` (mutable) owns the training algorithm, reward function, optimizer, generation strategy — "how to get there". The LLM can modify `train.py` via code diffs but can never touch `prepare.py`. This prevents the LLM from gaming evaluation. In hybrid mode, when param search stalls, the LLM proposes diffs to `train.py` (e.g., adding partial-credit rewards, gradient accumulation, or a different sampling strategy).
+- **Policy**: Parameter proposal strategies. Five types across two modules:
+  - `policy/search.py`: `GridPolicy` (exhaustive combos), `RandomPolicy` (seeded uniform), `StaticPolicy` (no overrides)
+  - `policy/llm_search.py`: `LLMParamPolicy` calls any OpenAI-compatible chat API to propose params from full experiment history; falls back to seeded random on failure; retries on 429/502/503 with exponential backoff + jitter
+  - `policy/llm_diff.py`: `LLMDiffPolicy` proposes code modifications as unified diffs with correction retry on validation failure
+  - `policy/hybrid.py`: `HybridPolicy` starts with param exploration, switches to code diffs when params stall, falls back to param mode on consecutive diff failures
+  - `policy/learned.py` + `policy/learned_search.py`: learned policy using PPO-style updates
+- **Model artifact persistence**: When `telemetry.model_output_dir` is set, the engine injects `AR_MODEL_DIR` (versioned path) into each iteration. On Basilica, the bootstrap HTTP server exposes `/model/files` and `/model/download/<path>` so the controller can download trained model checkpoints before container cleanup. The `upload` CLI subcommand pushes the best model to HuggingFace Hub.
+- **Controller** (`controller/continuous.py`): Orchestrates the loop with stop guards (wall time, no-improvement streak, failure rate). Each iteration: propose params -> train -> eval -> keep/discard -> download model -> emit telemetry
+- **Config** (`config.py`): Pydantic models for all config sections. YAML config validated via `RunConfig.model_validate()`
+
+### 2. Legacy contract/sandbox loop (not used by CLI)
+Runtime path: `controller/loop.py` -> `sandbox/runner.py` -> `eval/*`
+
+- **Sandbox** (`sandbox/`): Validates diffs (`validator.py`, `ast_policy.py`), applies patches via git worktrees, runs trials with early stopping and power-law forecasting
+- **Contract** (`controller/contract.py`): Enforces frozen/mutable file boundaries - diffs can only touch the designated mutable file
+- **Eval** (`eval/`): `judge.py` does heuristic next-state voting, `scoring.py` computes composite scores, `metrics.py` parses stdout for val_bpb/loss
+- **Policy** (`policy/baselines.py`, `policy/learned.py`): Diff-proposal policies - `GreedyLLMPolicy` proposes code changes, `LearnedDiffPolicy` learns weights via PPO-style updates
+
+### Telemetry (`telemetry/`)
+Shared by both loops:
+- `events.py`: JSONL trace emission
+- `ledger.py`: TSV results ledger with comparability metadata
+- `manifest.py`: per-run manifest files
+- `comparability.py`: hardware fingerprinting and budget-mode checks (strict mode blocks mismatched runs)
+- `distill.py`: distillation sample collection (legacy loop only)
+
+### Key design patterns
+- **Keep/discard**: iterations that beat the best score are "kept" with versioned artifacts in `artifacts/versions/v####/`
+- **Comparability enforcement**: runs record hardware fingerprint + budget mode; strict mode rejects budget mismatches
+- **Objective direction**: `direction: min` or `max` in config; internally normalized via `_score()` so lower is always better
+- Ruff line length: 100
+
+## Hard rule for agents working in this repo
+
+**Do not call a feature "done" without a realistic-config end-to-end
+run on the same day you wrote it.**
+
+This rule exists because of a real pattern: agents (including past
+sessions) shipped work that passed unit tests but broke under realistic
+configs. The contract path-comparison bug (commit `fef66d1`) is the
+clearest example — every test fixture used `mutable_file="train.py"`
+while every real example uses `mutable_file="examples/foo/train.py"`,
+so the basename-vs-prefix mismatch silently rejected every diff for
+weeks. Unit tests, ruff, and mypy were all green throughout.
+
+What "realistic-config end-to-end run" means concretely:
+
+- **Configuration changes**: run `make validate CONFIG=examples/<name>/config.yaml`
+  on at least one real example whose shape matches the change.
+- **Engine / contract / executor changes**: run `make smoke` (~30 s).
+- **LLM-policy changes**: run `make real-llm` if you have
+  `MOONSHOT_API_KEY` set; otherwise verify `tests/eval/test_prompt_eval.py`
+  still asserts the structural property you changed.
+- **Parallel / cancellation changes**: run `make showcase` and confirm
+  `best_value != null` and a non-empty cancellation set.
+- **Adding a new example**: add it to
+  `tests/test_examples_smoke.py` in the appropriate tier. Skipping this
+  is how the contract bug stayed hidden — there was no end-to-end
+  example test in CI to catch it.
+
+Before declaring work complete in chat, attach the evidence: which
+command was run, which artifact was produced, what the assertion was.
+"Tests pass / lint clean / mypy clean" is **not** evidence that a
+feature works. It is evidence that the failures you happened to write
+tests for are absent.
+
+See `CONTRIBUTING.md` for the per-area pre-merge checklist.

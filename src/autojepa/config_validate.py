@@ -1,0 +1,363 @@
+"""Two-phase runtime config validation.
+
+Phase 1 (pydantic): structural validation in config.py via model_validator.
+Phase 2 (this module): semantic checks against the filesystem and environment.
+
+Pure function: returns errors, never mutates. Called from cli.py before any
+deployment or expensive setup. Errors with severity='error' refuse to start;
+'warn' is printed and the run continues.
+
+Adopted from RLix's two-phase validate-then-mutate pattern.
+"""
+from __future__ import annotations
+
+import ast
+import os
+import re
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Literal
+
+from autojepa.config import RunConfig
+
+Severity = Literal["error", "warn"]
+
+_RESERVED_PARAM_PREFIXES = ("AR_",)
+
+
+@dataclass(frozen=True)
+class ValidationError:
+    severity: Severity
+    code: str
+    message: str
+    field: str = ""
+
+    def format(self) -> str:
+        prefix = f"[{self.severity.upper()}]"
+        loc = f" ({self.field})" if self.field else ""
+        return f"{prefix} {self.code}{loc}: {self.message}"
+
+
+def validate_runtime(cfg: RunConfig) -> list[ValidationError]:
+    """Run all semantic checks. Returns ordered list of errors and warnings."""
+    errors: list[ValidationError] = []
+    errors.extend(_check_param_keys(cfg))
+    errors.extend(_check_policy_files(cfg))
+    errors.extend(_check_basilica_target(cfg))
+    errors.extend(_check_llm_credentials(cfg))
+    errors.extend(_check_checkpoint_dir(cfg))
+    errors.extend(_check_model_output_dir(cfg))
+    errors.extend(_check_budget_alignment(cfg))
+    errors.extend(_check_required_calls_for_cancel(cfg))
+    errors.extend(_check_telemetry_paths_not_overwriting_tracked(cfg))
+    return errors
+
+
+def has_blocking_errors(errors: list[ValidationError]) -> bool:
+    return any(e.severity == "error" for e in errors)
+
+
+# ---------------------------------------------------------------- individual checks
+
+
+def _check_param_keys(cfg: RunConfig) -> list[ValidationError]:
+    out: list[ValidationError] = []
+    for key in cfg.policy.params:
+        for reserved in _RESERVED_PARAM_PREFIXES:
+            if key.upper().startswith(reserved):
+                out.append(ValidationError(
+                    severity="error",
+                    code="reserved_param_key",
+                    field=f"policy.params.{key}",
+                    message=(
+                        f"parameter name collides with reserved env var prefix "
+                        f"'{reserved}' (the controller injects AR_PARAM_<NAME>)"
+                    ),
+                ))
+    return out
+
+
+def _check_policy_files(cfg: RunConfig) -> list[ValidationError]:
+    out: list[ValidationError] = []
+    for label, path in (
+        ("policy.mutable_file", cfg.policy.mutable_file),
+        ("policy.frozen_file", cfg.policy.frozen_file),
+        ("policy.program_file", cfg.policy.program_file),
+    ):
+        if path and not Path(path).is_file():
+            out.append(ValidationError(
+                severity="error",
+                code="missing_file",
+                field=label,
+                message=f"file does not exist: {path}",
+            ))
+    return out
+
+
+def _check_basilica_target(cfg: RunConfig) -> list[ValidationError]:
+    if cfg.target.type != "basilica":
+        return []
+    out: list[ValidationError] = []
+    # The basilica-sdk reads BASILICA_API_TOKEN (verified in
+    # basilica/__init__.py). Earlier the validator checked the wrong
+    # name; that was a real bug surfaced when running a real campaign.
+    # Accept either spelling so users with legacy .env files still pass.
+    if not (os.environ.get("BASILICA_API_TOKEN") or os.environ.get("BASILICA_API_KEY")):
+        out.append(ValidationError(
+            severity="error",
+            code="missing_env",
+            field="env.BASILICA_API_TOKEN",
+            message=(
+                "BASILICA_API_TOKEN is not set; basilica target requires it "
+                "(the SDK reads BASILICA_API_TOKEN — BASILICA_API_KEY also "
+                "accepted as a back-compat alias)"
+            ),
+        ))
+    if not cfg.target.basilica.gpu_models:
+        out.append(ValidationError(
+            severity="error",
+            code="empty_gpu_models",
+            field="target.basilica.gpu_models",
+            message="must list at least one GPU model (e.g. ['A100','H100'])",
+        ))
+    if cfg.target.basilica.gpu_count < 1:
+        out.append(ValidationError(
+            severity="error",
+            code="invalid_gpu_count",
+            field="target.basilica.gpu_count",
+            message=f"must be >= 1, got {cfg.target.basilica.gpu_count}",
+        ))
+    return out
+
+
+def _check_llm_credentials(cfg: RunConfig) -> list[ValidationError]:
+    if cfg.policy.type not in {"llm", "llm_diff", "hybrid"}:
+        return []
+    env_var = cfg.policy.llm_api_key_env
+    if not os.environ.get(env_var):
+        return [ValidationError(
+            severity="error",
+            code="missing_env",
+            field=f"env.{env_var}",
+            message=(
+                f"{env_var} (configured via policy.llm_api_key_env) is not set; "
+                f"required when policy.type is '{cfg.policy.type}'"
+            ),
+        )]
+    return []
+
+
+def _check_checkpoint_dir(cfg: RunConfig) -> list[ValidationError]:
+    if not cfg.controller.checkpoint_path:
+        return []
+    parent = Path(cfg.controller.checkpoint_path).parent
+    if parent and not parent.exists():
+        # Try to create — checkpoint dir is allowed to not exist yet.
+        try:
+            parent.mkdir(parents=True, exist_ok=True)
+        except OSError as exc:
+            return [ValidationError(
+                severity="error",
+                code="unwritable_dir",
+                field="controller.checkpoint_path",
+                message=f"cannot create parent dir {parent}: {exc}",
+            )]
+    if not os.access(parent, os.W_OK):
+        return [ValidationError(
+            severity="error",
+            code="unwritable_dir",
+            field="controller.checkpoint_path",
+            message=f"parent dir not writable: {parent}",
+        )]
+    return []
+
+
+def _check_model_output_dir(cfg: RunConfig) -> list[ValidationError]:
+    if not cfg.telemetry.model_output_dir:
+        return []
+    parent = Path(cfg.telemetry.model_output_dir)
+    if parent.exists() and not os.access(parent, os.W_OK):
+        return [ValidationError(
+            severity="error",
+            code="unwritable_dir",
+            field="telemetry.model_output_dir",
+            message=f"dir not writable: {parent}",
+        )]
+    return []
+
+
+def _check_budget_alignment(cfg: RunConfig) -> list[ValidationError]:
+    expected = cfg.comparability.expected_budget_s
+    wall = cfg.controller.max_wall_time_s
+    if wall is not None and expected > wall:
+        return [ValidationError(
+            severity="warn",
+            code="budget_exceeds_wall",
+            field="comparability.expected_budget_s",
+            message=(
+                f"expected_budget_s={expected} exceeds controller.max_wall_time_s={wall}; "
+                f"runs will be cut short before budget is reached"
+            ),
+        )]
+    return []
+
+
+def _check_required_calls_for_cancel(cfg: RunConfig) -> list[ValidationError]:
+    """R3.e: positive-presence guardrail.
+
+    If intra-iteration cancel is enabled, the trial source MUST contain at
+    least one emit_progress(...) call — otherwise no progress signal can fire
+    cancellation and the feature is dead.
+
+    Trial source is identified by, in priority order:
+      1. policy.mutable_file (always set in diff/hybrid modes)
+      2. the first .py argument inside target.train_cmd, joined with workdir
+
+    If neither resolves to an existing file, we emit a warn (not an error)
+    — the trial may legitimately be a non-Python command we can't introspect.
+    """
+    cancel_enabled = getattr(
+        getattr(cfg.controller, "intra_iteration_cancel", None),
+        "enabled",
+        False,
+    )
+    if not cancel_enabled:
+        return []
+
+    src_path = _find_trial_source(cfg)
+    if src_path is None:
+        return [ValidationError(
+            severity="warn",
+            code="cancel_source_unknown",
+            field="controller.intra_iteration_cancel",
+            message=(
+                "intra_iteration_cancel.enabled but the trial source cannot be "
+                "located via policy.mutable_file or target.train_cmd; "
+                "cannot verify emit_progress(...) is called"
+            ),
+        )]
+    try:
+        src = src_path.read_text(encoding="utf-8")
+    except OSError as exc:
+        return [ValidationError(
+            severity="error",
+            code="trial_source_unreadable",
+            field="trial_source",
+            message=f"cannot read trial source {src_path}: {exc}",
+        )]
+    if not _has_emit_progress_call(src):
+        return [ValidationError(
+            severity="error",
+            code="missing_emit_progress",
+            field=str(src_path),
+            message=(
+                f"intra_iteration_cancel.enabled but {src_path} contains no "
+                f"emit_progress(...) calls; cancellation can never fire"
+            ),
+        )]
+    return []
+
+
+def _find_trial_source(cfg: RunConfig) -> Path | None:
+    """Return the most likely trial source file. None if cannot determine."""
+    if cfg.policy.mutable_file:
+        p = Path(cfg.policy.mutable_file)
+        if p.is_file():
+            return p
+    cmd = cfg.target.train_cmd or []
+    workdir = Path(cfg.target.workdir or ".")
+    for arg in cmd:
+        if isinstance(arg, str) and arg.endswith(".py"):
+            candidates = [Path(arg), workdir / arg]
+            for cand in candidates:
+                if cand.is_file():
+                    return cand
+    return None
+
+
+def _check_telemetry_paths_not_overwriting_tracked(
+    cfg: RunConfig,
+) -> list[ValidationError]:
+    """Warn if a telemetry sink would overwrite git-tracked content.
+
+    Real motivating bug: examples/basilica-grpo/config.yaml writes to
+    artifacts/basilica-grpo/results.tsv, which is committed paper-report
+    data in some user trees. A naive re-run silently overwrote that
+    research output. This check surfaces the collision before any iter
+    runs so the operator can choose: redirect, accept the overwrite, or
+    git-stash the existing data.
+
+    Severity is `warn` (not error): the user may be intentionally
+    appending to or replacing tracked data, and we should not block a
+    legitimate resume. Errors would force a clunky --override on every
+    run of an example.
+    """
+    out: list[ValidationError] = []
+    for field, path_value in (
+        ("telemetry.ledger_path", cfg.telemetry.ledger_path),
+        ("telemetry.trace_path", cfg.telemetry.trace_path),
+        ("telemetry.artifacts_dir", cfg.telemetry.artifacts_dir),
+        ("telemetry.versions_dir", cfg.telemetry.versions_dir),
+        ("telemetry.model_output_dir", cfg.telemetry.model_output_dir),
+    ):
+        if not path_value:
+            continue
+        if _is_git_tracked(path_value):
+            out.append(ValidationError(
+                severity="warn",
+                code="telemetry_overwrites_tracked",
+                field=field,
+                message=(
+                    f"{path_value} is git-tracked; running this campaign "
+                    "may overwrite committed data. Redirect via "
+                    f"--override {field}=<other> or stash the existing "
+                    "file before re-running."
+                ),
+            ))
+    return out
+
+
+def _is_git_tracked(path: str) -> bool:
+    """True if `path` (or any file underneath it) is tracked by git.
+
+    Best-effort: uses subprocess to ask `git ls-files`. Returns False if
+    git isn't available or the path is outside a repo — in those cases
+    the overwrite-protection guarantee doesn't apply but we don't fail
+    validation either.
+    """
+    import subprocess
+    try:
+        cp = subprocess.run(
+            ["git", "ls-files", "--error-unmatch", "--", path],
+            capture_output=True, text=True, timeout=5, check=False,
+        )
+        if cp.returncode == 0 and cp.stdout.strip():
+            return True
+    except (FileNotFoundError, OSError, subprocess.TimeoutExpired):
+        return False
+    # If the path is a directory, ls-files returns the contained files.
+    try:
+        cp = subprocess.run(
+            ["git", "ls-files", "--", path],
+            capture_output=True, text=True, timeout=5, check=False,
+        )
+        return cp.returncode == 0 and bool(cp.stdout.strip())
+    except (FileNotFoundError, OSError, subprocess.TimeoutExpired):
+        return False
+
+
+def _has_emit_progress_call(src: str) -> bool:
+    """Walk AST and return True if any call to emit_progress(...) exists."""
+    try:
+        tree = ast.parse(src)
+    except SyntaxError:
+        # Fall back to regex if source is not valid Python (e.g. mid-edit).
+        return bool(re.search(r"\bemit_progress\s*\(", src))
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Call):
+            func = node.func
+            if isinstance(func, ast.Name) and func.id == "emit_progress":
+                return True
+            if isinstance(func, ast.Attribute) and func.attr == "emit_progress":
+                return True
+    return False

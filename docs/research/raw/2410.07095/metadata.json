@@ -1,0 +1,22 @@
+{
+  "title": "MLE-bench: Evaluating Machine Learning Agents on Machine Learning Engineering",
+  "authors": [
+    "Jun Shern Chan",
+    "Neil Chowdhury",
+    "Oliver Jaffe",
+    "James Aung",
+    "Dane Sherburn",
+    "Evan Mays",
+    "Giulio Starace",
+    "Kevin Liu",
+    "Leon Maksin",
+    "Tejal Patwardhan",
+    "Lilian Weng",
+    "Aleksander Madry"
+  ],
+  "year": 2024,
+  "arxiv_id": "2410.07095",
+  "url": "https://arxiv.org/abs/2410.07095",
+  "venue": "ICLR 2025",
+  "fetched_at": "2026-05-15"
+}

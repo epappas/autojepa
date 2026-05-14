@@ -1,0 +1,14 @@
+{
+  "title": "Investigating design choices in joint-embedding predictive architectures for general audio representation learning",
+  "authors": [
+    "Alain Riou",
+    "Stefan Lattner",
+    "Gaetan Hadjeres",
+    "Geoffroy Peeters"
+  ],
+  "year": 2024,
+  "arxiv_id": "2405.08679",
+  "url": "https://arxiv.org/abs/2405.08679",
+  "venue": "ICASSP 2024 SASB workshop (Self-supervision in Audio, Speech and Beyond)",
+  "fetched_at": "2026-05-15"
+}

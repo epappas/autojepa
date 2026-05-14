@@ -1,0 +1,16 @@
+{
+  "title": "On the Importance of Hyperparameters and Data Augmentation for Self-Supervised Learning",
+  "authors": [
+    "Diane Wagner",
+    "Fabio Ferreira",
+    "Danny Stoll",
+    "Robin Tibor Schirrmeister",
+    "Samuel Mueller",
+    "Frank Hutter"
+  ],
+  "year": 2022,
+  "arxiv_id": "2207.07875",
+  "url": "https://arxiv.org/abs/2207.07875",
+  "venue": "ICML 2022 Pre-training Workshop",
+  "fetched_at": "2026-05-15"
+}

@@ -1,0 +1,24 @@
+{
+  "title": "AFlow: Automating Agentic Workflow Generation",
+  "authors": [
+    "Jiayi Zhang",
+    "Jinyu Xiang",
+    "Zhaoyang Yu",
+    "Fengwei Teng",
+    "Xionghui Chen",
+    "Jiaqi Chen",
+    "Mingchen Zhuge",
+    "Xin Cheng",
+    "Sirui Hong",
+    "Jinlin Wang",
+    "Bingnan Zheng",
+    "Bang Liu",
+    "Yuyu Luo",
+    "Chenglin Wu"
+  ],
+  "year": 2024,
+  "arxiv_id": "2410.10762",
+  "url": "https://arxiv.org/abs/2410.10762",
+  "venue": "arXiv (cs.AI); later accepted at ICLR 2025",
+  "fetched_at": "2026-05-15"
+}

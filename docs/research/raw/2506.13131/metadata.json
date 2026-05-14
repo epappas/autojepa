@@ -1,0 +1,28 @@
+{
+  "title": "AlphaEvolve: A Coding Agent for Scientific and Algorithmic Discovery",
+  "authors": [
+    "Alexander Novikov",
+    "Ngan Vu",
+    "Marvin Eisenberger",
+    "Emilien Dupont",
+    "Po-Sen Huang",
+    "Adam Zsolt Wagner",
+    "Sergey Shirobokov",
+    "Borislav Kozlovskii",
+    "Francisco J. R. Ruiz",
+    "Abbas Mehrabian",
+    "M. Pawan Kumar",
+    "Abigail See",
+    "Swarat Chaudhuri",
+    "George Holland",
+    "Alex Davies",
+    "Sebastian Nowozin",
+    "Pushmeet Kohli",
+    "Matej Balog"
+  ],
+  "year": 2025,
+  "arxiv_id": "2506.13131",
+  "url": "https://arxiv.org/abs/2506.13131",
+  "venue": "Google DeepMind white paper (arXiv preprint)",
+  "fetched_at": "2026-05-15"
+}
