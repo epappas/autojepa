@@ -38,9 +38,9 @@
 
 ### `src/autojepa/masking/`
 
-- [ ] `primitives.py` — `FutureBlockMask`, `MultiBlockInfillMask`, `SemanticUnitMask`, `ActorAnonymizedMask`, `TimeFrequencyMask`
-- [ ] `composite.py` — `CompositeMask([(mask, weight), ...])`
-- [ ] Tests: `tests/test_masking.py` covering composability and shape invariants
+- [x] `primitives.py` — `MaskOutput` + `MultiBlockInfillMask` (I-JEPA paper defaults: n_targets=4, target_scale=(0.15, 0.20), target_aspect=(0.75, 1.5), context_scale=(0.85, 1.0)). Other writeup §7.2 masks (`FutureBlockMask`, `SemanticUnitMask`, `ActorAnonymizedMask`, `TimeFrequencyMask`) deferred to Phases 2-3 (refusing to ship stubs per ZERO-TOLERANCE rule)
+- [x] `composite.py` — `CompositeMask([(mask, weight), ...])` weighted delegation
+- [x] Tests: `tests/test_masking.py` — 17/17 covering boundary checks, shape invariants, the I-JEPA non-overlap invariant (context ∩ targets = ∅), determinism, weighted-choice coverage
 
 ### `src/autojepa/models/`
 
