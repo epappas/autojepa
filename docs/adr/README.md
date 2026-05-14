@@ -29,3 +29,4 @@ line.
 | [008](008-forecaster-recalibration.md) | Recalibrate forecaster for SSL plateau curves | Accepted |
 | [009](009-multi-seed-default-3.md) | Multi-seed scoring with default 3 seeds | Accepted |
 | [010](010-jepa-extra-not-default.md) | Torch / Lightning live in `[jepa]` extra, not default deps | Accepted |
+| [011](011-models-namespace-as-facade.md) | `autojepa.models` is a facade over stable-pretraining (extends ADR-003) | Accepted |

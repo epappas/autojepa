@@ -32,6 +32,7 @@ jepa = [
   "torchmetrics>=1.4",
   "transformers>=4.44",
   "webdataset>=0.2",
+  "stable-pretraining>=0.1.6,<0.2",
 ]
 dev = [
   "pytest>=8.0",

@@ -46,9 +46,9 @@
 
 - [ ] `encoders.py` — ViT, ConvNeXt, generic transformer
 - [ ] `predictors.py` — block-causal, full-attention, cross-attention
-- [ ] `ema.py` — EMA update primitives with momentum schedules
-- [ ] `losses.py` — L1, L2, VICReg, Barlow Twins, DINO-center, LeWM-Gaussian
-- [ ] Tests: `tests/test_models_*.py`
+- [x] `ema.py` — EMAConfig + build_target_encoder (wraps `stable_pretraining.TeacherStudentWrapper`) + `assert_no_grad_on_target` invariant — 8/8 tests passing
+- [x] `losses.py` — facade re-exporting `spt.losses.{VICRegLoss, BarlowTwinsLoss, BYOLLoss, DINOv1Loss, NTXEntLoss, NegativeCosineSimilarity}` + closed-form `l1_loss` / `l2_loss` + flat `LOSS_REGISTRY` — 15/15 tests passing
+- [x] Tests: `tests/test_models_ema.py`, `tests/test_models_losses.py`
 
 ### `src/autojepa/gates.py`
 
