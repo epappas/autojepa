@@ -52,22 +52,22 @@
 
 ### `src/autojepa/gates.py`
 
-- [ ] Decision-gate engine (`probe_auroc>0.7 @ FPR<0.05` style)
-- [ ] Tests: `tests/test_gates.py`
+- [x] Decision-gate engine: `Gate`, `GateRequirement`, `GateResult`, `GateEngine.evaluate / should_abort`, plus `GateConfig` Pydantic loader and `build_engine` factory. Supports `<, <=, >, >=, ==, !=` ops and `abort_campaign | warn` on_fail. Per writeup §7.6
+- [x] Tests: `tests/test_gates.py` — 24/24 covering eval semantics, validation, after_iters cutoff, abort vs warn, expression parsing, YAML round-trip
 
-### `src/autojepa/forecaster.py` (adapted)
+### Forecaster recalibration (adapted)
 
-- [ ] Accept `forecast_target` config (default: `probe_auroc`)
-- [ ] Recalibrated SSL defaults: `min_steps: 2000`, `poll_interval_s: 30`, `min_reports_before_decide: 10`
-- [ ] Tests: `tests/test_forecaster_ssl.py`
+- [x] Recalibrated SSL defaults: `IntraIterationCancelConfig.min_steps: 2000`, `poll_interval_s: 30.0`, `min_reports_before_decide: 10` (writeup §6.2 / ADR-008). Mirror `GuardConfig` dataclass updated to match
+- [x] No new `forecast_target` field needed — `ObjectiveConfig.metric` is already wired through to `IntraIterationGuard.metric` at all 3 call sites; per ADR-012 we use it directly
+- [ ] `tests/test_forecaster_ssl.py` — SSL plateau-then-improvement curve test (forecaster must NOT cancel during long initial plateau). Will land in batch 5
 
 ### Config / `program.md` template
 
-- [ ] Default `objective.metric: probe_auroc`
-- [ ] Hybrid widened: `hybrid_param_explore_iters: 25`, `hybrid_stall_threshold: 5`
-- [ ] Param dims expanded to 10-12 JEPA-relevant dims
-- [ ] `program.md` template encoding hard rules (latent_var<0.3, eff_rank<32, RankMe<64, LiDAR<80 → fail; forbid removing EMA stop_gradient; forbid Ψ deeper than Φc)
-- [ ] Storage policy: `keep_top_k=5`, encoder-only archive, prune>7d
+- [x] Default `objective.metric: probe_auroc`, `direction: max` (ADR-004)
+- [ ] Hybrid widened: `hybrid_param_explore_iters: 25`, `hybrid_stall_threshold: 5` — needs `policy/hybrid.py` config inspection (batch 5)
+- [ ] Param dims expanded to 10-12 JEPA-relevant dims — touches `policy/_prompt_fragments.py` (batch 5)
+- [ ] `program.md` template encoding hard rules (latent_var<0.3, eff_rank<32, RankMe<64, LiDAR<80 → fail; forbid removing EMA stop_gradient; forbid Ψ deeper than Φc) — Phase 2 (used by `examples/ijepa-cifar10/program.md`)
+- [ ] Storage policy: `keep_top_k=5`, encoder-only archive, prune>7d — touches `telemetry/` and config (batch 5 or Phase-4 hardening)
 
 **Deliverable**: importable Python library; no working example yet.
 

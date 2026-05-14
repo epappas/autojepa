@@ -6,8 +6,18 @@ from pydantic import BaseModel, Field, model_validator
 
 
 class ObjectiveConfig(BaseModel):
-    metric: str = "val_bpb"
-    direction: Literal["min", "max"] = "min"
+    """Campaign objective metric.
+
+    AutoJEPA defaults to `probe_auroc` per ADR-004 (training loss
+    collapses, so probe-based downstream score is the only safe
+    objective). The metric name resolves against the dict passed to
+    `emit_progress(..., metrics={...})` from the trial subprocess.
+    Same field is used by the intra-iteration forecaster as the
+    series to extrapolate (writeup §6.2 forecast_target).
+    """
+
+    metric: str = "probe_auroc"
+    direction: Literal["min", "max"] = "max"
 
 
 class BasilicaConfig(BaseModel):
@@ -99,10 +109,24 @@ class ComparabilityConfig(BaseModel):
 
 
 class IntraIterationCancelConfig(BaseModel):
+    """Intra-iteration cancellation guard.
+
+    Defaults are recalibrated for SSL learning-curve shapes per ADR-008
+    (writeup §6.2): JEPA loss curves have a long plateau where only the
+    probe score moves, so the upstream autoresearch-rl defaults
+    (min_steps=5, poll_interval_s=5.0, min_reports_before_decide=5)
+    over-cancel JEPA trials in the plateau phase.
+
+    The metric extrapolated by the forecaster is `objective.metric`
+    (default `probe_auroc`); no separate `forecast_target` field is
+    needed because the autoresearch-rl plumbing already wires
+    `objective.metric` through to the IntraIterationGuard constructor.
+    """
+
     enabled: bool = False
-    min_steps: int = 5
-    poll_interval_s: float = 5.0
-    min_reports_before_decide: int = 5
+    min_steps: int = 2000
+    poll_interval_s: float = 30.0
+    min_reports_before_decide: int = 10
 
 
 class ParallelConfig(BaseModel):

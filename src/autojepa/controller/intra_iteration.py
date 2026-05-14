@@ -30,10 +30,18 @@ GuardDecision = Literal["continue", "cancel"]
 
 @dataclass
 class GuardConfig:
+    """Internal runtime config mirroring `config.IntraIterationCancelConfig`.
+
+    Defaults track the Pydantic config defaults — see
+    `IntraIterationCancelConfig` and ADR-008 for why these are large
+    for AutoJEPA (SSL plateau curves) versus the upstream autoresearch-rl
+    defaults (min_steps=5, poll=5.0).
+    """
+
     enabled: bool = True
-    min_steps: int = 5
-    poll_interval_s: float = 5.0
-    min_reports_before_decide: int = 5
+    min_steps: int = 2000
+    poll_interval_s: float = 30.0
+    min_reports_before_decide: int = 10
 
 
 class BestValueRef:
