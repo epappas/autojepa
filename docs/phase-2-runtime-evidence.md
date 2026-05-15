@@ -278,6 +278,108 @@ the kubectl path.
 The v4 device-bug fix (`38d6251`) is still correct and stays in.
 But it never fired in production because pip install died first.
 
+### Smoke v11 (commit `b3fbad1`) — outcome.json + custom image + LLM fallback
+
+After v10 (commit `82c5e72`) ran 3 iters and produced the same
+`{"iterations": 3, "best_value": null}` failure mode, we landed three
+commits to address the three concrete root causes:
+
+1. `edbda75` — outcome.json contract (ADR-015). train.py writes
+   `<AR_MODEL_DIR>/outcome.json` on every exit path; the basilica
+   adapter polls `/model/files` for it and uses it as the
+   completion signal in `<= one poll interval`, replacing the
+   timeout-then-discard path.
+2. `b3fbad1` — `ghcr.io/epappas/autojepa-runtime:phase2` baked image
+   (ADR-016). torch + lightning + transformers==4.47.1 +
+   stable-pretraining 0.1.6 + timm + autojepa core deps + git all
+   pre-installed. setup_cmd shrinks from ~10 KB / 5-10 min to
+   `pip install --no-deps autojepa @ git+...` + base64-inject of
+   train.py/prepare.py — empirically <60 s on a warm container.
+   Build wall time on the local builder: ~26 min cold (extracting
+   the 3 GB base layer dominated; subsequent rebuilds are ~5 s). Push
+   to GHCR succeeded with digest
+   `sha256:eccab56c54516a7da89e778077e563ca54704be43d32fd46bc2ce5e2de55b1f5`.
+3. `5e300ff` — LLM model-name fallback list (ADR-017). Chutes
+   silently renamed `deepseek-ai/DeepSeek-V3-0324` to
+   `deepseek-ai/DeepSeek-V3-0324-TEE`; the policy now accepts a
+   `str | list[str]` and advances on 404. Live verified: the fallback
+   tried all three names in `examples/ijepa-cifar10/config.yaml`
+   (`-TEE`, `-0324`, `DeepSeek-V3`) and each returned 404 — Chutes
+   appears to have removed the entire DeepSeek-V3 family. The
+   fallback then propagated to seeded random (the existing safety
+   net), which is correct framework behaviour; the campaign just
+   has fewer LLM proposals than designed.
+
+Smoke command:
+
+```bash
+git checkout b3fbad1
+set -a && source .env && set +a
+uv run python3 examples/ijepa-cifar10/deploy.py --max-iterations 3 --git-ref b3fbad1
+```
+
+### v11 outcome — BLOCKED on GHCR visibility (NOT a code regression)
+
+`kubectl describe pod -n u-github-434149 <pod>` immediately
+surfaced the failure mode:
+
+```
+  Warning  Failed   21s (x3 over 57s)  kubelet  Failed to pull image
+  "ghcr.io/epappas/autojepa-runtime:phase2": failed to pull and unpack
+  image: failed to authorize: failed to fetch anonymous token:
+  unexpected status from GET request to https://ghcr.io/token?
+  scope=repository%3Aepappas%2Fautojepa-runtime%3Apull&service=ghcr.io:
+  401 Unauthorized
+  Warning  Failed   21s (x3 over 57s)  kubelet  Error: ErrImagePull
+  Normal   BackOff  6s  (x3 over 57s)  kubelet  Back-off pulling image
+```
+
+The image is private by default on GHCR. Anonymous pull confirms:
+
+```
+$ curl -sS -i https://ghcr.io/v2/epappas/autojepa-runtime/manifests/phase2
+HTTP/2 401
+www-authenticate: Bearer realm="https://ghcr.io/token",
+                  service="ghcr.io",
+                  scope="repository:epappas/autojepa-runtime:pull"
+```
+
+Two paths to fix, both **outside the assistant's permitted
+surface**:
+
+1. Make the GHCR package public:
+   ```
+   gh api -X PATCH /user/packages/container/autojepa-runtime \
+       --field visibility=public
+   ```
+   Auto-classifier blocked this on "Create Public Surface" intent —
+   user must run it (or click the button in the GHCR UI).
+2. Or attach a GHCR pull secret to the Basilica namespace
+   (`kubectl create secret docker-registry ...` then patch the
+   ServiceAccount). Auto-classifier denied a write op on a shared
+   k8s namespace.
+
+Once visibility is opened (or a pull secret is attached), the
+re-smoke command above is unchanged and the three contract +
+infra fixes from `edbda75` / `b3fbad1` / `5e300ff` are expected to
+let it complete with `best_value` non-null. The lone iter-0
+proposal that DID land in `traces/ijepa-cifar10/events.jsonl`
+before the pod hit BackOff:
+
+```json
+{"schema": "v1", "type": "proposal", "iter": 0,
+ "params": {"learning_rate": 0.0002, "weight_decay": 0.0,
+            "batch_size": 128, "max_steps": 6000,
+            "predictor_depth": 2, "predictor_embed_dim": 128,
+            "num_targets": 4, "ema_decay_start": 0.99,
+            "probe_eval_every_n_steps": 500,
+            "_type": "param",
+            "AR_MODEL_DIR": "artifacts/ijepa-cifar10/models/v0000"}}
+```
+
+The lingering deployment was deleted via the SDK after the smoke
+was killed.
+
 ### Smoke v6 (commit `954ea70`) — apt-installs git, RELAUNCHED
 
 ```
