@@ -12,10 +12,10 @@ target:
   timeout_s: 3600
   prepare_cmd:
     - python3
-    - prepare.py
+    - /app/prepare.py
   train_cmd:
     - python3
-    - train.py
+    - /app/train.py
   basilica:
     image: pytorch/pytorch:2.4.1-cuda12.4-cudnn9-devel
     gpu_count: 1
@@ -24,9 +24,14 @@ target:
     cpu: "8"
     storage: "/data"
     ttl_seconds: 4200
+    # NOTE: Use deploy.py rather than `autojepa run config.yaml` directly.
+    # deploy.py reads train.py + prepare.py locally, base64-encodes them,
+    # and injects them into /app/ via this setup_cmd. Pip-installing
+    # autojepa from GitHub provides autojepa.* imports but NOT examples/.
+    # If you bypass deploy.py, the train_cmd will fail with "No such file".
     setup_cmd: |
       pip install --no-cache-dir 'autojepa[jepa] @ git+https://github.com/epappas/autojepa.git@HEAD' && \
-      python -c "from autojepa import cli; print('autojepa importable')"
+      python -c "from autojepa import cli; print('autojepa importable — but train.py/prepare.py NOT injected; use deploy.py')"
 
 policy:
   type: hybrid
