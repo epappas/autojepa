@@ -53,11 +53,24 @@ OUTCOME_FILENAME = "outcome.json"
 
 # Bootstrap script injected into every Basilica deployment.
 # Starts a health-check server, then runs the user command via subprocess.
-# Uses string.Template ($port, $cmd) so dict / f-string braces stay literal.
+# Uses string.Template ($port, $cmd, $env_inject) so dict / f-string braces
+# stay literal.
+#
+# $env_inject is a Python literal `_os.environ.update({...})` that bakes the
+# AR_* env vars into the bootstrap process before any reads. Required because
+# k8s container-spec env vars do NOT reliably propagate into custom Docker
+# images on Basilica (verified live on commit b3fbad1: `kubectl exec env |
+# grep ^AR_` returned empty even when env=env was passed to
+# create_deployment). Inlining is defense-in-depth: even if the SDK env
+# field is honoured, the inline form preserves the controller's intent
+# atomically; if it isn't honoured, the bootstrap still self-injects.
 _BOOTSTRAP_TEMPLATE = string.Template(r"""
 import subprocess, sys, threading, time, json, os as _os
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from pathlib import Path as _Path
+
+# ADR-018: inline env injection — survives custom-image env-propagation gaps.
+$env_inject
 
 _model_dir = _os.environ.get("AR_MODEL_DIR", "")
 _progress_path = _os.environ.get("AR_PROGRESS_FILE", "/tmp/ar_progress.jsonl")
@@ -219,8 +232,21 @@ class BasilicaTarget:
         user_cmd: list[str],
         setup_cmd: str | None = None,
         post_trial_sleep_s: int = 90,
+        env: dict[str, str] | None = None,
     ) -> str:
-        """Wrap user command in bootstrap that starts health server."""
+        """Wrap user command in bootstrap that starts health server.
+
+        `env` is inlined into the bootstrap script as a literal
+        `_os.environ.update({...})` call (ADR-018). This guards against
+        the Basilica SDK's `env=` parameter not propagating into custom
+        Docker images on the cluster — a real failure observed live on
+        commit b3fbad1 where `kubectl exec env | grep ^AR_` returned
+        empty. With env inlined, the bootstrap script self-injects
+        before any os.environ.get() call, so AR_MODEL_DIR /
+        AR_PARAMS_JSON / AR_PARAM_* / AR_PROGRESS_FILE / AR_CONTROL_FILE
+        are reliably visible to the bootstrap, the setup_cmd subprocess,
+        and the user command.
+        """
         setup = setup_cmd
         setup_block = ""
         if setup:
@@ -229,8 +255,15 @@ class BasilicaTarget:
                 f"_sp.check_call({repr(setup)}, shell=True)\n"
             )
         cmd_repr = repr(user_cmd)
+        # Build the env inject block. We use json.dumps to safely encode
+        # arbitrary string values (handles quotes, backslashes, unicode).
+        # The `or {}` makes this a no-op when called from older code paths
+        # or tests that don't pass env.
+        env_payload = json.dumps(dict(env or {}), default=str)
+        env_inject = f"_os.environ.update(json.loads({repr(env_payload)}))"
         script = _BOOTSTRAP_TEMPLATE.substitute(
             port=HEALTH_PORT, cmd=cmd_repr, post_sleep=post_trial_sleep_s,
+            env_inject=env_inject,
         )
         # Insert setup block after the health server start
         marker = "threading.Thread("
@@ -281,6 +314,7 @@ class BasilicaTarget:
         bootstrap = self._build_bootstrap_cmd(
             user_cmd, setup_cmd=setup or None,
             post_trial_sleep_s=self._bcfg.post_trial_sleep_s,
+            env=env,
         )
 
         health_check = HealthCheckConfig(

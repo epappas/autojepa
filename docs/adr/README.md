@@ -33,3 +33,7 @@ line.
 | [012](012-objective-metric-is-forecast-target.md) | `objective.metric` is the forecast target — no separate field (refines ADR-008) | Accepted |
 | [013](013-forecaster-plateau-limitation.md) | SSL plateau-then-rise is a known forecaster limitation (refines ADR-008) | Accepted |
 | [014](014-deliberately-suboptimal-baseline.md) | Phase-2 example baseline is deliberately suboptimal (gives LLM headroom) | Accepted |
+| [015](015-outcome-detection-contract.md) | `outcome.json` iter-done contract between train.py and basilica adapter | Accepted |
+| [016](016-custom-docker-image.md) | Bake JEPA deps into a custom Docker image (drops per-iter overhead) | Accepted |
+| [017](017-llm-model-fallback.md) | `llm_model` accepts a list — fallback on 404 (Chutes silent renames) | Accepted |
+| [018](018-bootstrap-env-inline.md) | Inline AR_* env vars into the Basilica bootstrap script (ADR-015 unblocker) | Accepted |

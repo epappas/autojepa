@@ -234,6 +234,55 @@ class TestBuildBootstrapCmd:
         assert "do_POST" in script
 
 
+class TestBootstrapEnvInjection:
+    """ADR-018 contract: env values are inlined into the bootstrap script
+    so they survive any Basilica-SDK env-propagation gap with custom
+    Docker images (verified live on commit b3fbad1: kubectl exec env
+    showed empty AR_* even when env=env was passed to create_deployment)."""
+
+    def test_no_env_yields_empty_inject_dict(self) -> None:
+        script = BasilicaTarget._build_bootstrap_cmd(["python3", "train.py"])
+        assert "_os.environ.update(json.loads(" in script
+        # Empty env still produces a no-op update with {}
+        assert "_os.environ.update(json.loads('{}'))" in script
+
+    def test_env_dict_is_inlined_as_json_literal(self) -> None:
+        script = BasilicaTarget._build_bootstrap_cmd(
+            ["python3", "train.py"],
+            env={"AR_MODEL_DIR": "artifacts/test/v0001",
+                 "AR_PARAMS_JSON": '{"lr": 0.001}',
+                 "AR_PARAM_LR": "0.001"},
+        )
+        # The whole values must round-trip into the script as a json string
+        assert "AR_MODEL_DIR" in script
+        assert "artifacts/test/v0001" in script
+        assert "AR_PARAM_LR" in script
+        # The injection happens BEFORE _model_dir is read
+        inject_pos = script.index("_os.environ.update(json.loads(")
+        read_pos = script.index('_model_dir = _os.environ.get("AR_MODEL_DIR"')
+        assert inject_pos < read_pos, (
+            "env_inject must precede the AR_MODEL_DIR read; otherwise "
+            "the bootstrap server's _model_dir is empty when the update "
+            "runs and the model-files endpoint returns no files"
+        )
+
+    def test_env_with_special_chars_round_trips(self) -> None:
+        # Backslashes, quotes, unicode — must survive json.dumps + eval.
+        script = BasilicaTarget._build_bootstrap_cmd(
+            ["python3", "train.py"],
+            env={"AR_PARAMS_JSON": '{"path": "C:\\\\x", "name": "α"}'},
+        )
+        # Round-trip the env back out by extracting the json payload.
+        import json
+        marker = "_os.environ.update(json.loads("
+        idx = script.index(marker) + len(marker)
+        end = script.index("))", idx)
+        repr_payload = script[idx:end]
+        # repr_payload is like  '{"AR_PARAMS_JSON": "..."}'  (a Python string literal)
+        decoded = json.loads(eval(repr_payload))
+        assert decoded["AR_PARAMS_JSON"] == '{"path": "C:\\\\x", "name": "α"}'
+
+
 class TestPropagateControl:
     """_propagate_control uploads run_dir/control.json to deployment /control."""
 
