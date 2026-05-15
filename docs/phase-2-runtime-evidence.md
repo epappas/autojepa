@@ -192,18 +192,49 @@ contract issue.
 
 **v1 campaign stopped** at iter 1 (which was retrying LLM with 429s).
 
-### Smoke v2 (commit `b467ca8`) — RELAUNCHED
+### Smoke v2 (commit `b467ca8`) — FAILED at exactly elapsed=1805s
+
+Same `not_ready` failure mode. The bumped 1800s timeout was still
+tight: pip-installing `autojepa[jepa] @ git+...` reliably exceeds
+30 min on a fresh Basilica container.
+
+### Smoke v3 (commit `d23af7c`) — STOPPED before launch
+
+Attempted to slim setup_cmd by skipping transformers + webdataset +
+datasets. Verified locally that this breaks: `import stable_pretraining`
+hard-imports both transformers AND datasets at package import time
+(despite shipping a separate dependency for them). v3 stopped before
+Basilica deployment to save the wasted GPU time.
+
+### Smoke v4 (commit `5ab0262`) — IN FLIGHT, container ready in ~30s
+
+Restored transformers + datasets in setup_cmd; only webdataset stays
+out (verified `'webdataset' not in sys.modules` after spt import).
+Bumped `ready_timeout_s: 3600` (1 hour) as belt-and-suspenders.
 
 ```
-$ uv run python3 examples/ijepa-cifar10/deploy.py --max-iterations 3 --git-ref b467ca8
+$ uv run python3 examples/ijepa-cifar10/deploy.py --max-iterations 3 --git-ref 5ab0262
 ```
 
-Background task `baljfic4a`. Monitor `bp4c1xvws` watching
-`traces/ijepa-cifar10/events.jsonl` for outcome events.
+Background task `b0pw7yaki`. Deployment came up:
 
-Status: in flight. Per-iter ETA on A100 with the bumped timeout:
-~12-15 min container boot (heavy install) + ~10-30 min training =
-~25-45 min/iter. Total 3-iter ETA: ~75-135 min.
+```
+friendly_name: ar-train-f286c5ea
+state:         Active
+replicas:      desired=1 ready=1
+created_at:    2026-05-15T12:24:49 UTC
+```
+
+**Surprise observation**: container ready in ~30s vs the >30 min cold
+boot we saw on v1/v2. Hypothesis: Basilica caches pip wheel files
+between deployments on the same node, so subsequent installs hit a
+warm wheel cache. If this holds across iters, the per-iter overhead
+drops from ~30 min → ~30s, making the full 20-iter campaign budget
+~$5-15 instead of $30-100. Verifying with iter 0 outcome.
+
+Status: training in progress on the warm container. ETA: ~10-20 min
+per iter for 6200 training steps (200 canary + 6000 pretrain) on A100
++ 12 probe-eval rounds.
 
 ### Why a 3-iter smoke before the full 20-iter campaign
 
