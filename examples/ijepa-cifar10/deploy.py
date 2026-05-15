@@ -80,10 +80,19 @@ def _build_setup_cmd(git_ref: str) -> str:
     6. Sanity-import + nvidia-smi check.
     """
     apt = "apt-get update -qq && apt-get install -y -qq git"
+    # transformers >=4.50 uses `from __future__ import annotations` in
+    # integrations/moe.py, which produces lazy-string type hints
+    # (`'torch.Tensor'`). torch 2.4 (pre-installed in the Basilica base
+    # image) calls infer_schema() on those hints during
+    # `torch.library.custom_op` registration and fails because its
+    # resolver does not handle string annotations. Pin transformers to
+    # 4.47.x — the same version autoresearch-rl/examples/basilica-grpo
+    # uses successfully on the same base image. Verified via kubectl
+    # logs of v6 (commit 954ea70).
     deps = (
         "pip install --no-cache-dir "
         "torch>=2.4 lightning>=2.4 torchmetrics>=1.4 torchvision "
-        "transformers>=4.44 datasets "
+        "'transformers>=4.47,<4.48' datasets "
         "'stable-pretraining>=0.1.6,<0.2' timm"
     )
     autojepa_deps = (
