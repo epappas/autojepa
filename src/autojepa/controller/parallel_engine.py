@@ -269,6 +269,14 @@ def run_experiment_parallel(
                     if telemetry.model_output_dir:
                         model_dir = str(Path(telemetry.model_output_dir) / f"v{iter_idx:04d}")
                         params["AR_MODEL_DIR"] = model_dir
+                        # ADR-019: also mutate the source proposal so
+                        # `executor.execute(prop, run_dir)` picks up
+                        # AR_MODEL_DIR via prop.params (the extractor
+                        # returns a fresh dict for the proposal-event;
+                        # mutating only that leaves the executor blind).
+                        _params_attr = getattr(prop, "params", None)
+                        if isinstance(_params_attr, dict):
+                            _params_attr["AR_MODEL_DIR"] = model_dir
 
                     cost = compute_resource_cost(target, params) if target else {"gpu": 1}
                     if not pool.try_acquire(iter_idx=iter_idx, cost=cost):

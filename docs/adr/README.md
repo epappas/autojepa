@@ -37,3 +37,4 @@ line.
 | [016](016-custom-docker-image.md) | Bake JEPA deps into a custom Docker image (drops per-iter overhead) | Accepted |
 | [017](017-llm-model-fallback.md) | `llm_model` accepts a list — fallback on 404 (Chutes silent renames) | Accepted |
 | [018](018-bootstrap-env-inline.md) | Inline AR_* env vars into the Basilica bootstrap script (ADR-015 unblocker) | Accepted |
+| [019](019-ar-model-dir-proposal-mutation.md) | AR_MODEL_DIR must mutate proposal.params, not just the extractor copy (ADR-018 unblocker) | Accepted |

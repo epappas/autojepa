@@ -291,13 +291,32 @@ def run_experiment(
 
             run_dir = str(Path(telemetry.artifacts_dir) / f"run-{iter_idx:04d}")
 
-            # Inject model output directory if configured
+            # Inject model output directory if configured.
+            #
+            # We mutate BOTH the extracted `params` dict (used by the
+            # proposal-event emit below) AND the original
+            # `proposal.params` dict (used by `executor.execute(proposal,
+            # ...)` further down). They are different objects: the
+            # extractor returns a fresh dict (cf. _hybrid_extractor:
+            # `{**proposal.params, "_type": "param"}`), so mutating the
+            # extracted copy alone leaves AR_MODEL_DIR out of the env
+            # the basilica adapter assembles from `proposal.params`.
+            #
+            # ADR-019: AR_MODEL_DIR must propagate to the trial. Without
+            # this, the bootstrap server's `_model_dir` is empty and the
+            # outcome.json polling path (ADR-015) cannot find the file
+            # train.py wrote at `$AR_MODEL_DIR/outcome.json`. Verified
+            # live on commit b33d79a (v13): AR_MODEL_DIR was missing
+            # from `kubectl exec env`, every iter timed out at 3600s.
             model_dir: str | None = None
             if telemetry.model_output_dir:
                 model_dir = str(
                     Path(telemetry.model_output_dir) / f"v{iter_idx:04d}"
                 )
                 params["AR_MODEL_DIR"] = model_dir
+                _params_attr = getattr(proposal, "params", None)
+                if isinstance(_params_attr, dict):
+                    _params_attr["AR_MODEL_DIR"] = model_dir
 
             emit(
                 telemetry.trace_path,
