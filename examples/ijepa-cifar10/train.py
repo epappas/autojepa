@@ -83,7 +83,6 @@ def main() -> int:
         import lightning.pytorch as pl
         import torch
         import torchvision.transforms.functional as TF
-        from stable_pretraining import TeacherStudentCallback
         from stable_pretraining.methods import IJEPA
     except ImportError as exc:
         print(f"ERROR: train.py requires the [jepa] extra: {exc}", file=sys.stderr)
@@ -177,8 +176,13 @@ def main() -> int:
         lr=LEARNING_RATE,
         weight_decay=WEIGHT_DECAY,
     )
-    teacher_student_cb = TeacherStudentCallback()
 
+    # We call wrapper.update_teacher() / update_ema_coefficient() directly
+    # rather than via spt.callbacks.TeacherStudentCallback because the
+    # callback expects a real Lightning Trainer (`trainer.global_step`)
+    # and we run a manual training loop. Verified live on v9
+    # (commit badbe80) which crashed in the callback with
+    # `AttributeError: 'NoneType' object has no attribute 'global_step'`.
     step = 0
     best_probe_auroc = 0.0
     while step < MAX_STEPS:
@@ -190,7 +194,8 @@ def main() -> int:
             output = model(images)
             output.loss.backward()
             optimizer.step()
-            teacher_student_cb.on_train_batch_end(None, model, None, None, step)
+            model.encoder.update_teacher()
+            model.encoder.update_ema_coefficient(step, MAX_STEPS)
             step += 1
 
             if step % PROBE_EVAL_EVERY_N_STEPS == 0 or step == MAX_STEPS:
