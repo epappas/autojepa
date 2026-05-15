@@ -240,20 +240,67 @@ forward time linearly — a regime change my test didn't cover. A
 custom Docker image with `nvidia-smi` in setup_cmd would have caught
 this immediately (Phase-4 hardening note).
 
-### Smoke v5 (commit `38d6251`) — RELAUNCHED with the device fix
+### Smoke v5 (commit `38d6251`) — silent crash-loop again
+
+Same symptom as v4: container Active, ready=1, no `emit_progress`.
+Stopped at ~7 min in to investigate.
+
+### THE actual root cause — discovered via kubectl logs
+
+The user (cluster owner) granted read-only `kubectl` access to the
+Basilica cluster. Pulled container logs directly:
 
 ```
-$ uv run python3 examples/ijepa-cifar10/deploy.py --max-iterations 3 --git-ref 38d6251
+$ kubectl logs -n u-github-434149 b353e7d4-...
+Collecting autojepa@ git+https://github.com/epappas/autojepa.git@38d6251
+  Cloning https://github.com/epappas/autojepa.git (to revision 38d6251)
+  ERROR: Error [Errno 2] No such file or directory: 'git' while
+  executing command git version
+ERROR: Cannot find command 'git' - do you have 'git' installed and
+in your PATH?
 ```
 
-Background task `bra2yqsmr`. Monitor `bo57hi0jz` armed on
-events.jsonl. ETA per iter on A100:
-- prepare.py CIFAR download: ~30s
-- canary 200 steps: ~10-20s on GPU
-- pretrain 6000 steps + 12 probe-eval rounds: ~5-8 min
-- Total iter: ~10 min
+**The Basilica base image `pytorch/pytorch:2.4.1-cuda12.4-cudnn9-devel`
+does not ship git.** All my "fixes" between v1 and v5 addressed
+secondary symptoms (ready_timeout, slim-install, transformers,
+device) — none of which mattered because pip never got past the
+git-clone step. The container simply exited with code 1 every restart,
+k8s crash-looped it, and the Basilica adapter eventually marked it
+"not_ready" or timed out.
 
-3-iter ETA: ~30-45 min from launch (assuming wheel cache holds).
+**Lesson**: `kubectl logs` on the GPU container is the single most
+useful diagnostic for Basilica failures. Adding it to the
+runbook for Phase-3 / Phase-4 is mandatory. The original Basilica
+SDK `get_deployment_logs` API was returning 502s the whole session,
+which is what blocked the diagnosis until the user pointed out
+the kubectl path.
+
+The v4 device-bug fix (`38d6251`) is still correct and stays in.
+But it never fired in production because pip install died first.
+
+### Smoke v6 (commit `954ea70`) — apt-installs git, RELAUNCHED
+
+```
+$ uv run python3 examples/ijepa-cifar10/deploy.py --max-iterations 3 --git-ref 954ea70
+```
+
+setup_cmd now starts with `apt-get update -qq && apt-get install -y -qq git`.
+Bonus: sanity step prints `torch.cuda.is_available()` so a future
+GPU-detection regression surfaces immediately in the bootstrap log.
+
+Background task `ba24ajfrq`. Monitors armed on (1) events.jsonl and
+(2) `kubectl get pods -n u-github-434149 -w`.
+
+ETA per iter on A100 (now we should actually exercise the device
+fix from `38d6251`):
+- apt-get install git: ~30 s
+- pip install heavy deps: ~5-10 min cold (faster on warm cache)
+- prepare.py CIFAR download: ~30 s
+- canary 200 steps on GPU: ~10-20 s
+- pretrain 6000 steps + 12 probe-eval on GPU: ~5-8 min
+- Total iter: ~12-20 min
+
+3-iter ETA: ~40-70 min.
 
 ### Why a 3-iter smoke before the full 20-iter campaign
 
