@@ -158,11 +158,19 @@ def main() -> int:
         return 1
 
     # ---------- pretraining loop with periodic probe eval
+    # num_workers=0 (single-process) because the Basilica container ships
+    # the Docker default /dev/shm of 64 MB. multi-process DataLoader
+    # workers serialise tensors via shared memory and crash with
+    # "Bus error" / "DataLoader worker killed" on the first fetch.
+    # Verified live on v8 (commit 6657977): canary loader with
+    # num_workers=0 succeeded, pretrain loader with num_workers=2
+    # crashed immediately. The lazy 224x224 resize is cheap enough on
+    # the main process that the GPU isn't starved.
     pretrain_loader = torch.utils.data.DataLoader(
         _LazyResizeDataset(train_x),
         batch_size=BATCH_SIZE,
         shuffle=True,
-        num_workers=2,
+        num_workers=0,
     )
     optimizer = torch.optim.AdamW(
         [p for p in model.parameters() if p.requires_grad],
