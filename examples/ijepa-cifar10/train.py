@@ -104,16 +104,24 @@ def main() -> int:
     # train_y not consumed during pretraining (SSL); the linear-probe
     # eval reads its own labels from probe_eval.pt.
     canary = torch.load(DATA_DIR / "canary.pt")
+    canary_x = canary["x"]  # (1000, 3, 32, 32) uint8
 
-    # Resize CIFAR to 224 to match the timm vit_tiny encoder. Done once
-    # at load time on CPU; small enough that this is < 1 GB RAM.
-    def _to_224(x_uint8: torch.Tensor) -> torch.Tensor:
-        x = x_uint8.float() / 255.0
-        return TF.resize(x, [224, 224], antialias=True)
+    # Eager resize of all 50k CIFAR images to (50000, 3, 224, 224) float32
+    # would be ~30 GB and OOM the 32 GiB container. Resize lazily per-batch
+    # via a custom Dataset wrapper instead — the per-batch tensor at
+    # batch=128 is ~75 MB, fits easily.
+    print(f"using lazy 224x224 resize over {len(train_x)} train + {len(canary_x)} canary samples", flush=True)
 
-    print(f"resizing {len(train_x)} train images to 224x224 ...", flush=True)
-    train_x_224 = _to_224(train_x)
-    canary_x_224 = _to_224(canary["x"])
+    class _LazyResizeDataset(torch.utils.data.Dataset):
+        def __init__(self, x_uint8: torch.Tensor) -> None:
+            self._x = x_uint8
+
+        def __len__(self) -> int:
+            return self._x.shape[0]
+
+        def __getitem__(self, idx: int) -> torch.Tensor:
+            x = self._x[idx].float() / 255.0
+            return TF.resize(x, [224, 224], antialias=True)
 
     model = IJEPA(
         encoder_name="vit_tiny_patch16_224",
@@ -127,9 +135,9 @@ def main() -> int:
     assert_no_grad_on_target(model.encoder)
 
     # ---------- canary: drive L_predict below threshold on 1k samples
-    print(f"canary: overfit {len(canary_x_224)} samples on {device} ...", flush=True)
+    print(f"canary: overfit {len(canary_x)} samples on {device} ...", flush=True)
     canary_loader = torch.utils.data.DataLoader(
-        torch.utils.data.TensorDataset(canary_x_224),
+        _LazyResizeDataset(canary_x),
         batch_size=BATCH_SIZE,
         shuffle=True,
     )
@@ -151,7 +159,7 @@ def main() -> int:
 
     # ---------- pretraining loop with periodic probe eval
     pretrain_loader = torch.utils.data.DataLoader(
-        torch.utils.data.TensorDataset(train_x_224),
+        _LazyResizeDataset(train_x),
         batch_size=BATCH_SIZE,
         shuffle=True,
         num_workers=2,
@@ -166,10 +174,9 @@ def main() -> int:
     step = 0
     best_probe_auroc = 0.0
     while step < MAX_STEPS:
-        for batch in pretrain_loader:
+        for images in pretrain_loader:
             if step >= MAX_STEPS:
                 break
-            (images,) = batch
             images = images.to(device, non_blocking=True)
             optimizer.zero_grad()
             output = model(images)
@@ -204,10 +211,9 @@ def _run_canary(model, loader, max_steps: int, lr: float, device) -> float:
     losses: list[float] = []
     step = 0
     while step < max_steps:
-        for batch in loader:
+        for images in loader:
             if step >= max_steps:
                 break
-            (images,) = batch
             images = images.to(device, non_blocking=True)
             optimizer.zero_grad()
             out = model(images)
@@ -223,20 +229,19 @@ def _run_linear_probe(model, data_dir: Path, device) -> float:
 
     Uses a 50-step linear classifier fit on extracted features; matches
     the methodology in I-JEPA paper §3 linear-eval protocol but cheaper.
+    Probe set is 5k+5k uint8 (~120 MB resized lazily inside _extract_features
+    rather than eagerly to fit the container's 32 GiB memory budget).
     """
     import torch
-    import torchvision.transforms.functional as TF
 
     probe_data = torch.load(data_dir / "probe_eval.pt")
-    x_train = TF.resize(probe_data["x_train"].float() / 255.0, [224, 224], antialias=True)
-    x_test = TF.resize(probe_data["x_test"].float() / 255.0, [224, 224], antialias=True)
     y_train = probe_data["y_train"].to(device)
     y_test = probe_data["y_test"].to(device)
 
     model.eval()
     with torch.no_grad():
-        feats_train = _extract_features(model, x_train, batch_size=128, device=device)
-        feats_test = _extract_features(model, x_test, batch_size=128, device=device)
+        feats_train = _extract_features(model, probe_data["x_train"], batch_size=128, device=device)
+        feats_test = _extract_features(model, probe_data["x_test"], batch_size=128, device=device)
     model.train()
 
     classifier = torch.nn.Linear(feats_train.shape[1], 10).to(device)
@@ -256,24 +261,26 @@ def _run_linear_probe(model, data_dir: Path, device) -> float:
     return acc
 
 
-def _extract_features(model, x, batch_size: int, device):
+def _extract_features(model, x_uint8, batch_size: int, device):
     """Extract per-image embeddings from the EMA target encoder.
 
-    The stable-pretraining MaskedEncoder returns a `MaskedEncoderOutput`
-    namedtuple with `.encoded` (B, N+cls, D), `.grid_size`, `.ids_keep`,
-    `.mask`. We average over patch tokens (excluding the CLS token if
-    present) to get (B, D) probe features.
+    Accepts a uint8 (N, 3, 32, 32) CIFAR tensor; resizes per-batch to
+    (B, 3, 224, 224) float to fit memory. The stable-pretraining
+    MaskedEncoder returns a `MaskedEncoderOutput` namedtuple with
+    `.encoded` (B, N+cls, D); we drop the CLS token then mean-pool to
+    get (B, D) probe features.
     """
     import torch
+    import torchvision.transforms.functional as TF
 
     parts: list[torch.Tensor] = []
-    for i in range(0, len(x), batch_size):
-        batch = x[i : i + batch_size].to(device, non_blocking=True)
+    for i in range(0, len(x_uint8), batch_size):
+        chunk = x_uint8[i : i + batch_size].float() / 255.0
+        batch = TF.resize(chunk, [224, 224], antialias=True).to(device, non_blocking=True)
         with torch.no_grad():
             out = model.encoder.forward_teacher(batch)
         feats = out.encoded if hasattr(out, "encoded") else out
         if feats.ndim == 3:
-            # Drop CLS token if encoder uses one (vit_tiny does), then mean-pool.
             num_prefix = getattr(out, "num_prefix_tokens", 1)
             feats = feats[:, num_prefix:].mean(dim=1)
         parts.append(feats)
