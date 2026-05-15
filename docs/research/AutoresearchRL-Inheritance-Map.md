@@ -295,3 +295,35 @@ AutoJEPA will want to selectively port. Track decisions in
 - Cost-aware policies (Basilica $/iter). Likely to land upstream because Basilica is the prime target both projects share.
 
 Cap upstream sync work at ~1h/wk per writeup standing-tasks.
+
+---
+
+## 13. External baseline references
+
+Distilled paper notes added 2026-05-15 to back the Phase-3 `examples/trace-jepa/`
+design and evaluation. These are baseline / cite-only references; **none of
+them enters the core framework** (`src/autojepa/`). They land in the codebase
+at the Phase-3 example level only — `examples/trace-jepa/` config search-space
+and `examples/trace-jepa/` evaluation harness — preserving the rule that
+contrib-style features stay in examples (writeup §8 / ADR rejection of the
+contrib-namespace pattern).
+
+| Distilled note | Upstream | Family | Codebase entry point |
+|---|---|---|---|
+| [mts-jepa.md](mts-jepa.md) | arxiv:2602.04643 | JEPA / time-series | Phase 3 — `examples/trace-jepa/config.yaml` `codebook_size` and `codebook_loss_weight` search dimensions; Phase-3 evaluation baseline (the JEPA-on-time-series row) |
+| [jepa-automotive-monitoring.md](jepa-automotive-monitoring.md) | arxiv:2602.09985 | JEPA / automotive AD | Phase 3 — architectural reference for the `codebook_size=0, codebook_loss_weight=0` control row of the trace-jepa search (vanilla JEPA + classical AD on top, same split as `src/autojepa/eval/`) |
+| [jepa-av-security-survey.md](jepa-av-security-survey.md) | ScienceDirect S1474034626002909 | JEPA AV survey / cite-only | Phase 3 — related-work citation only; **not a baseline**, **not a search dimension**. The source page is not ingested in Alexandria as of 2026-05-15; only the `topic=JEPA-Security-Gap` belief is. Documented in the note. |
+| [ssl-ids-landscape.md](ssl-ids-landscape.md) | arxiv:2509.16625 (GraphIDS), 2502.07119 (SAFE), 2509.06550 (CLAN), 2505.08816 (Transformer-Contrastive IDS) | Non-JEPA SSL-IDS baselines | Phase 3 — evaluation baselines (the MAE-based row, GraphIDS or SAFE; the contrastive rows CLAN and Transformer-Contrastive IDS as additional controls) |
+
+Scope rules:
+- Phase-2 (`examples/ijepa-cifar10/`) is unaffected. It remains the
+  vanilla-I-JEPA reproduction kill-criterion run; do not add §13 entries to
+  it.
+- Phase-3 (`examples/trace-jepa/`) consumes these references via its
+  `config.yaml` search dimensions (codebook) and its evaluation harness
+  (external baselines). See `TODO.md` Phase 3 for the operational gates.
+- Per the `topic=JEPA-Security-Gap` belief in Alexandria (asserted 2026-05-15),
+  no published JEPA paper targets logs, agent traces, prompt-injection
+  detection, eBPF/syscall traces, or container observability. The four
+  references above are the closest published prior art, which is why they
+  are baselines rather than precedents.
