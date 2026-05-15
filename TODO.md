@@ -89,18 +89,21 @@
 - [x] `tests/test_examples_smoke.py` re-points TIER2_VALIDATE_ONLY at this example
 - [x] ADR-014 documents the deliberately-suboptimal-baseline decision
 
-### Validated locally (Phase 2 batch 2 — current state)
+### Validated locally (Phase 2 batch 2 — DONE 2026-05-15, evidence in `docs/phase-2-runtime-evidence.md`)
 
 - [x] `BASILICA_API_TOKEN=stub CHUTES_API_KEY=stub uv run autojepa validate examples/ijepa-cifar10/config.yaml` -> `OK`
-- [x] prepare.py and train.py both import cleanly under `[jepa]` extras
-- [x] Full test suite: 556 passed, 6 skipped (no regressions; the new Tier-2 validate test for ijepa-cifar10 passes)
-- [ ] CPU/GPU smoke (`./run.sh smoke`) executes 50 steps end-to-end without errors — needs runtime validation
-- [ ] `./run.sh prepare` downloads CIFAR-10 and writes `data/*.pt` — needs runtime validation
+- [x] `BASILICA_API_TOKEN=<real> CHUTES_API_KEY=<real> uv run autojepa validate ...` -> `OK` (real credentials accepted)
+- [x] prepare.py downloaded CIFAR-10 in 7s, materialised all 6 documented `.pt` outputs
+- [x] Local 1-step IJEPA forward+backward integration test PASS (synthetic batch=2, CPU; commit `555386f`). Caught and fixed a real bug in `_extract_features` (MaskedEncoderOutput.encoded vs .predictions) before the Basilica run
+- [x] `examples/ijepa-cifar10/deploy.py` added — base64-injects train.py + prepare.py into the Basilica container per the upstream basilica-grpo pattern
+- [x] Full test suite: 574 passed, 6 skipped (no regressions)
+- [ ] Full 50-step smoke on CPU — impractical (3-7 hours estimated); skipped in favour of the Basilica smoke
 
-### To execute on Basilica (Phase 2 batch 3 — user-driven)
+### Phase 2 batch 3 — Basilica execution (in flight)
 
+- [ ] 3-iter Basilica smoke campaign (`--max-iterations 3 --git-ref 555386f`) — IN FLIGHT, monitor `bo1g3492h`
+- [ ] If smoke passes: authorise full 20-iter campaign with budget ~$30-100 of A100 time
 - [ ] Reserve no-forecaster control group for first 50 iters (per writeup §12.2 / ADR-013)
-- [ ] Run 20-iter hybrid campaign on Basilica with budget ~$30-100 of A100 time
 - [ ] **Decision gate**: ≥1 hybrid-mode diff produces a measurable retained improvement; `phase2_falsifier` gate (probe_auroc > 0.40) reports pass
 - [ ] **Deliverable**: reproducible I-JEPA-CIFAR campaign with hybrid-policy improvement, OR documented framework kill (writeup §12.1 escalation)
 
