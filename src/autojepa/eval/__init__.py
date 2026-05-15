@@ -10,6 +10,7 @@ unchanged for now. They will be relocated to `autojepa/parsing/` and
 some dropped per the inheritance map (`docs/research/AutoresearchRL-Inheritance-Map.md` §7).
 """
 
+from autojepa.eval.canary import CanaryConfig, build_canary_gate
 from autojepa.eval.collapse import (
     effective_rank,
     latent_variance,
@@ -17,7 +18,11 @@ from autojepa.eval.collapse import (
 )
 
 __all__ = [
+    # collapse signals (label-free, framework-free per ADR-007)
     "effective_rank",
     "latent_variance",
     "rankme",
+    # sanity-overfit canary (writeup §7.4)
+    "CanaryConfig",
+    "build_canary_gate",
 ]

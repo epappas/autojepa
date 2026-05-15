@@ -29,12 +29,11 @@
 
 ### `src/autojepa/eval/`
 
-- [ ] `probes.py` — linear, attentive, k-NN probes (wrap `stable-pretraining` Lightning callbacks where possible)
-- [x] `collapse.py` — RankMe, latent variance, effective rank (LiDAR deferred to `probes.py` wrapper since it requires labels) — 18/18 tests passing
-- [ ] `downstream.py` — task-eval suite scaffolding
-- [ ] `canary.py` — sanity-overfit canary (1k samples, fail-fast for broken pipelines)
-- [x] Tests: `tests/eval/test_collapse.py` (18 cases covering full-collapse, rank-1, partial-collapse, isotropic, gate thresholds)
-- [ ] Tests: `tests/eval/test_probes.py`, `test_canary.py`
+- [x] `probes.py` — `build_linear_probe`, `build_knn_probe`, `build_rankme`, `build_lidar`, `default_probes` factories wrapping `spt.callbacks.{OnlineProbe, OnlineKNN, RankMe, LiDAR}` — 13/13 tests passing
+- [x] `collapse.py` — RankMe, latent variance, effective rank (LiDAR via probes wrapper since it requires labels) — 18/18 tests passing
+- [ ] `downstream.py` — task-eval suite scaffolding (deferred to Phase 2 — concrete task suites land with examples)
+- [x] `canary.py` — `CanaryConfig` + `build_canary_gate` thin layer over `gates.Gate` per writeup §7.4 — 13/13 tests passing
+- [x] Tests: `tests/eval/test_collapse.py`, `test_probes.py`, `test_canary.py`, `tests/test_forecaster_ssl.py` (10 cases inc. honest documentation of the SSL plateau over-cancellation per ADR-013)
 
 ### `src/autojepa/masking/`
 

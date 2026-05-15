@@ -31,3 +31,4 @@ line.
 | [010](010-jepa-extra-not-default.md) | Torch / Lightning live in `[jepa]` extra, not default deps | Accepted |
 | [011](011-models-namespace-as-facade.md) | `autojepa.models` is a facade over stable-pretraining (extends ADR-003) | Accepted |
 | [012](012-objective-metric-is-forecast-target.md) | `objective.metric` is the forecast target — no separate field (refines ADR-008) | Accepted |
+| [013](013-forecaster-plateau-limitation.md) | SSL plateau-then-rise is a known forecaster limitation (refines ADR-008) | Accepted |
