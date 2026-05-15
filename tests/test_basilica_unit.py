@@ -403,3 +403,201 @@ class TestRunEvalCachePerRunDir:
         outcome = target.eval(run_dir="/no-prior-run", params={})
         assert outcome.status == "ok"
         assert outcome.metrics == {}
+
+
+class TestFetchOutcome:
+    """ADR-015 outcome.json contract: adapter pulls outcome via /model/files."""
+
+    def _build_target(self) -> BasilicaTarget:
+        target = BasilicaTarget.__new__(BasilicaTarget)
+        target._client = None  # type: ignore[attr-defined]
+        target._cfg = None  # type: ignore[attr-defined]
+        target._bcfg = None  # type: ignore[attr-defined]
+        return target
+
+    def _mock_resp(self, body: bytes):
+        from unittest.mock import MagicMock
+        resp = MagicMock()
+        resp.read = MagicMock(return_value=body)
+        resp.__enter__ = MagicMock(return_value=resp)
+        resp.__exit__ = MagicMock(return_value=False)
+        return resp
+
+    def test_returns_payload_when_present(self) -> None:
+        from unittest.mock import MagicMock, patch
+
+        target = self._build_target()
+        deployment = MagicMock()
+        deployment.url = "http://example/"
+
+        listing = json.dumps({
+            "files": [
+                {"path": "outcome.json", "size": 80},
+                {"path": "model.pt", "size": 4096},
+            ],
+            "model_dir": "/m",
+        }).encode()
+        outcome_payload = json.dumps({
+            "status": "ok",
+            "metrics": {"probe_auroc": 0.281, "loss": 0.008},
+            "elapsed_s": 1417,
+            "completed_steps": 4000,
+            "step_target": 4000,
+            "ts": 1778900000,
+        }).encode()
+
+        with patch(
+            "autojepa.target.basilica.urllib.request.urlopen",
+            side_effect=[self._mock_resp(listing), self._mock_resp(outcome_payload)],
+        ):
+            payload = target._fetch_outcome(deployment)
+        assert payload is not None
+        assert payload["status"] == "ok"
+        assert payload["metrics"]["probe_auroc"] == 0.281
+
+    def test_returns_none_when_outcome_absent(self) -> None:
+        from unittest.mock import MagicMock, patch
+
+        target = self._build_target()
+        deployment = MagicMock()
+        deployment.url = "http://example/"
+
+        listing = json.dumps({"files": [{"path": "model.pt", "size": 4096}]}).encode()
+        with patch(
+            "autojepa.target.basilica.urllib.request.urlopen",
+            return_value=self._mock_resp(listing),
+        ):
+            payload = target._fetch_outcome(deployment)
+        assert payload is None
+
+    def test_returns_none_on_listing_error(self) -> None:
+        from unittest.mock import MagicMock, patch
+
+        target = self._build_target()
+        deployment = MagicMock()
+        deployment.url = "http://example/"
+
+        with patch(
+            "autojepa.target.basilica.urllib.request.urlopen",
+            side_effect=ConnectionError("boom"),
+        ):
+            payload = target._fetch_outcome(deployment)
+        assert payload is None
+
+    def test_returns_none_on_malformed_payload(self) -> None:
+        from unittest.mock import MagicMock, patch
+
+        target = self._build_target()
+        deployment = MagicMock()
+        deployment.url = "http://example/"
+
+        listing = json.dumps({"files": [{"path": "outcome.json", "size": 80}]}).encode()
+        with patch(
+            "autojepa.target.basilica.urllib.request.urlopen",
+            side_effect=[self._mock_resp(listing), self._mock_resp(b"not-json{")],
+        ):
+            payload = target._fetch_outcome(deployment)
+        assert payload is None
+
+    def test_handles_nested_outcome_path(self) -> None:
+        from unittest.mock import MagicMock, patch
+
+        target = self._build_target()
+        deployment = MagicMock()
+        deployment.url = "http://example/"
+
+        listing = json.dumps({"files": [{"path": "subdir/outcome.json", "size": 80}]}).encode()
+        outcome_payload = json.dumps({"status": "failed", "reason": "x", "metrics": {}}).encode()
+        with patch(
+            "autojepa.target.basilica.urllib.request.urlopen",
+            side_effect=[self._mock_resp(listing), self._mock_resp(outcome_payload)],
+        ):
+            payload = target._fetch_outcome(deployment)
+        assert payload is not None
+        assert payload["status"] == "failed"
+
+
+class TestFinalizeOutcome:
+    """_finalize_outcome converts a payload to RunOutcome and cleans up."""
+
+    def _build_target(self) -> BasilicaTarget:
+        target = BasilicaTarget.__new__(BasilicaTarget)
+        target._client = None  # type: ignore[attr-defined]
+        target._cfg = None  # type: ignore[attr-defined]
+        target._bcfg = None  # type: ignore[attr-defined]
+        return target
+
+    def test_ok_status_propagates(self, tmp_path) -> None:
+        from unittest.mock import MagicMock, patch
+
+        target = self._build_target()
+        deployment = MagicMock()
+        deployment.url = "http://example/"
+        deployment.logs = MagicMock(return_value="")
+        deployment.delete = MagicMock()
+
+        outcome = {
+            "status": "ok",
+            "metrics": {"probe_auroc": 0.31, "loss": 0.01},
+            "elapsed_s": 100.0,
+            "completed_steps": 4000,
+            "step_target": 4000,
+            "ts": 1,
+        }
+        # Stub _download_model so this stays a unit test
+        with patch.object(target, "_download_model", return_value=None):
+            result = target._finalize_outcome(
+                deployment, "ar-test", t0=0.0, run_dir=str(tmp_path),
+                outcome=outcome,
+            )
+        assert result.status == "ok"
+        assert result.metrics["probe_auroc"] == 0.31
+        deployment.delete.assert_called_once()
+
+    def test_failed_status_with_reason(self, tmp_path) -> None:
+        from unittest.mock import MagicMock, patch
+
+        target = self._build_target()
+        deployment = MagicMock()
+        deployment.url = "http://example/"
+        deployment.logs = MagicMock(return_value="")
+        deployment.delete = MagicMock()
+
+        outcome = {
+            "status": "failed",
+            "metrics": {"canary_loss": 0.06},
+            "elapsed_s": 60.0,
+            "reason": "canary_loss=0.0600 > threshold=0.05",
+            "ts": 1,
+        }
+        with patch.object(target, "_download_model", return_value=None):
+            result = target._finalize_outcome(
+                deployment, "ar-test", t0=0.0, run_dir=str(tmp_path),
+                outcome=outcome,
+            )
+        assert result.status == "failed"
+        assert "canary_loss" in result.metrics
+        assert "canary_loss=0.0600" in result.stderr
+
+    def test_non_numeric_metrics_skipped(self, tmp_path) -> None:
+        from unittest.mock import MagicMock, patch
+
+        target = self._build_target()
+        deployment = MagicMock()
+        deployment.url = "http://example/"
+        deployment.logs = MagicMock(return_value="")
+        deployment.delete = MagicMock()
+
+        outcome = {
+            "status": "ok",
+            "metrics": {"probe_auroc": 0.4, "label": "ok-string"},
+            "elapsed_s": 1.0,
+            "ts": 1,
+        }
+        with patch.object(target, "_download_model", return_value=None):
+            result = target._finalize_outcome(
+                deployment, "ar-test", t0=0.0, run_dir=str(tmp_path),
+                outcome=outcome,
+            )
+        assert "probe_auroc" in result.metrics
+        assert "label" not in result.metrics

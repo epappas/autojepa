@@ -93,6 +93,15 @@ class TestTrainContract:
         assert "AR_PARAMS_JSON" in src
         assert "AR_MODEL_DIR" in src
 
+    def test_outcome_json_helper_present(self) -> None:
+        """ADR-015: train.py must write outcome.json on every exit path."""
+        src = (EXAMPLE_DIR / "train.py").read_text()
+        assert "_write_outcome" in src
+        assert "OUTCOME_FILENAME" in src
+        # Required at canary-fail, success, import-error and last-resort paths.
+        assert src.count("_write_outcome(") >= 4
+        assert "_entrypoint" in src
+
 
 class TestProgramMdHardRules:
     """The example's program.md must encode the same JEPA invariants

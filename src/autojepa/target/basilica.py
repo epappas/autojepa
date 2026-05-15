@@ -46,6 +46,11 @@ class _Deployment(Protocol):
 
 HEALTH_PORT = 8080
 
+# Filename train.py writes when it exits to signal iter completion to the
+# controller. Polled via the bootstrap's /model/files endpoint. See
+# ADR-015 (outcome-detection contract) and examples/ijepa-cifar10/program.md.
+OUTCOME_FILENAME = "outcome.json"
+
 # Bootstrap script injected into every Basilica deployment.
 # Starts a health-check server, then runs the user command via subprocess.
 # Uses string.Template ($port, $cmd) so dict / f-string braces stay literal.
@@ -401,7 +406,16 @@ class BasilicaTarget:
         run_dir: str,
         remaining: float,
     ) -> RunOutcome:
-        """Poll logs until training metrics appear or timeout.
+        """Poll for outcome.json, log metrics, or timeout.
+
+        Three completion signals (in priority order):
+
+        1. **outcome.json** (ADR-015 contract): train.py writes a
+           structured outcome on exit; presence terminates the wait
+           immediately with the embedded status + metrics.
+        2. **Log-parsed metrics** (legacy): regex over stdout for
+           known metric keys.
+        3. **Timeout**: falls through to _collect_from_logs.
 
         Adaptive interval: drops to 5s when /progress shows live activity,
         backs off to 20s when stalled. Persists progress reports to
@@ -430,6 +444,14 @@ class BasilicaTarget:
             # the trial sees the cancel signal on its next call (Phase 2
             # cooperative cancel for Basilica targets).
             self._propagate_control(deployment, run_dir)
+
+            # Check the ADR-015 outcome.json signal first — explicit
+            # completion beats log-pattern guessing.
+            outcome = self._fetch_outcome(deployment)
+            if outcome is not None:
+                return self._finalize_outcome(
+                    deployment, name, t0, run_dir, outcome,
+                )
 
             logs = self._extract_messages(self._safe_logs(deployment))
             metrics = self._parse_metrics(logs)
@@ -471,9 +493,111 @@ class BasilicaTarget:
             except Exception:
                 pass
 
-        # Timeout
+        # Timeout — last-chance outcome.json check (the trial may have
+        # written it during the final sleep window).
+        outcome = self._fetch_outcome(deployment)
+        if outcome is not None:
+            return self._finalize_outcome(
+                deployment, name, t0, run_dir, outcome,
+            )
         return self._collect_from_logs(
             deployment, name, t0, run_dir, "timeout"
+        )
+
+    def _fetch_outcome(self, deployment: _Deployment) -> dict | None:
+        """Pull outcome.json from the container's bootstrap HTTP server.
+
+        Returns the decoded payload, or None if the file is absent /
+        unreadable / malformed. Best-effort: any network or parse error
+        is swallowed and the caller falls back to the legacy log-poll
+        path. See ADR-015 for the contract shape.
+        """
+        try:
+            base_url = deployment.url.rstrip("/")
+        except Exception:
+            return None
+        listing_url = f"{base_url}/model/files"
+        try:
+            req = urllib.request.Request(listing_url, method="GET")
+            with urllib.request.urlopen(req, timeout=10) as resp:
+                listing = json.loads(resp.read().decode("utf-8"))
+        except Exception:
+            return None
+        files = listing.get("files", []) if isinstance(listing, dict) else []
+        rel_path: str | None = None
+        for entry in files:
+            if not isinstance(entry, dict):
+                continue
+            path = entry.get("path", "")
+            if path == OUTCOME_FILENAME or path.endswith("/" + OUTCOME_FILENAME):
+                rel_path = path
+                break
+        if rel_path is None:
+            return None
+        download_url = f"{base_url}/model/download/{rel_path}"
+        try:
+            req = urllib.request.Request(download_url, method="GET")
+            with urllib.request.urlopen(req, timeout=10) as resp:
+                payload = json.loads(resp.read().decode("utf-8"))
+        except Exception:
+            return None
+        if not isinstance(payload, dict):
+            return None
+        return payload
+
+    def _finalize_outcome(
+        self,
+        deployment: _Deployment,
+        name: str,
+        t0: float,
+        run_dir: str,
+        outcome: dict,
+    ) -> RunOutcome:
+        """Convert a decoded outcome.json payload into a RunOutcome.
+
+        Downloads the rest of the model dir then deletes the container.
+        Status from the payload is honoured — `failed` propagates as
+        `failed` even if metrics were captured (e.g., canary fail).
+        """
+        elapsed_s = time.monotonic() - t0
+        status = str(outcome.get("status", "ok"))
+        raw_metrics = outcome.get("metrics") or {}
+        metrics: dict[str, float] = {}
+        if isinstance(raw_metrics, dict):
+            for k, v in raw_metrics.items():
+                try:
+                    metrics[str(k)] = float(v)
+                except (TypeError, ValueError):
+                    continue
+        reason = str(outcome.get("reason", "")) if outcome.get("reason") else ""
+        logger.info(
+            "%s outcome.json status=%s metrics=%s elapsed=%ds reason=%s",
+            name, status, list(metrics.keys()), int(elapsed_s), reason or "-",
+        )
+        with global_span(
+            "basilica.download_model",
+            category="basilica",
+            args={"name": name, "run_dir": run_dir},
+        ) as dl_args:
+            model_local = self._download_model(deployment, run_dir)
+            dl_args["downloaded"] = bool(model_local)
+        if model_local:
+            metrics["_model_dir"] = model_local  # type: ignore[assignment]
+        with global_span(
+            "basilica.cleanup",
+            category="basilica",
+            args={"name": name},
+        ):
+            self._cleanup(deployment, name)
+        logs = self._extract_messages(self._safe_logs(deployment))
+        if status == "ok":
+            return RunOutcome(
+                status="ok", metrics=metrics, stdout=logs,
+                stderr="", elapsed_s=elapsed_s, run_dir=run_dir,
+            )
+        return RunOutcome(
+            status="failed", metrics=metrics, stdout=logs,
+            stderr=reason or status, elapsed_s=elapsed_s, run_dir=run_dir,
         )
 
     def _propagate_control(self, deployment: _Deployment, run_dir: str) -> None:

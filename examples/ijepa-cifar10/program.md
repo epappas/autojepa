@@ -110,6 +110,24 @@ emit_progress(step, step_target, metrics={"probe_auroc": ...})
 autojepa.models.ema.assert_no_grad_on_target(model.encoder)
 ```
 
+The script must also write `outcome.json` into `$AR_MODEL_DIR` on
+exit (any path) per the ADR-015 outcome-detection contract. The
+basilica adapter polls for this file via the bootstrap's
+`/model/files` endpoint and uses it as the iter-done signal —
+without it, the controller waits until `target.timeout_s` and marks
+the iter `failed/discard` even if training succeeded. Shape:
+
+```json
+{"status": "ok", "metrics": {"probe_auroc": 0.281, "loss": 0.008},
+ "elapsed_s": 1417, "completed_steps": 4000, "step_target": 4000,
+ "ts": 1778900000}
+```
+
+For canary or pretrain failure use `{"status": "failed", "reason":
+"<why>", "metrics": {...}, "elapsed_s": ..., "ts": ...}`. Use the
+`_write_outcome(...)` helper at the top of `train.py`; do not roll
+your own writer.
+
 ## Architecture invariants (validator-enforced)
 
 - **Do NOT enable gradients on `model.encoder.teacher`.** The target

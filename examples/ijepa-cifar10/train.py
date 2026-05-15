@@ -31,13 +31,54 @@ from __future__ import annotations
 import json
 import os
 import sys
+import time
+import traceback
 from pathlib import Path
+from typing import Any
 
 # ---------- contract: read params and progress emitter from the controller
 
 from autojepa.target.progress import emit_progress  # noqa: E402
 
 PARAMS = json.loads(os.environ.get("AR_PARAMS_JSON", "{}"))
+
+OUTCOME_FILENAME = "outcome.json"
+
+
+def _write_outcome(
+    *,
+    model_dir: Path,
+    status: str,
+    metrics: dict[str, float],
+    elapsed_s: float,
+    completed_steps: int = 0,
+    step_target: int = 0,
+    reason: str | None = None,
+) -> None:
+    """Atomically write outcome.json so the controller can detect completion.
+
+    The basilica adapter polls /model/files for this file; presence is the
+    iter-done signal that lets the controller bypass timeout-based waits.
+    """
+    payload: dict[str, Any] = {
+        "status": status,
+        "metrics": {k: float(v) for k, v in metrics.items()},
+        "elapsed_s": float(elapsed_s),
+        "completed_steps": int(completed_steps),
+        "step_target": int(step_target),
+        "ts": int(time.time()),
+    }
+    if reason is not None:
+        payload["reason"] = reason
+    try:
+        model_dir.mkdir(parents=True, exist_ok=True)
+        target = model_dir / OUTCOME_FILENAME
+        tmp = target.with_suffix(".json.tmp")
+        tmp.write_text(json.dumps(payload, separators=(",", ":")), encoding="utf-8")
+        tmp.replace(target)
+        print(f"[outcome] wrote {target} status={status}", flush=True)
+    except OSError as exc:
+        print(f"[outcome] WARN: failed to write {OUTCOME_FILENAME}: {exc}", file=sys.stderr, flush=True)
 
 
 def _hp(name: str, default: float | int | str) -> float | int | str:
@@ -85,12 +126,21 @@ def main() -> int:
         import torchvision.transforms.functional as TF
         from stable_pretraining.methods import IJEPA
     except ImportError as exc:
+        _write_outcome(
+            model_dir=ARTIFACT_DIR,
+            status="failed",
+            metrics={},
+            elapsed_s=0.0,
+            reason=f"import_error: {exc}",
+        )
         print(f"ERROR: train.py requires the [jepa] extra: {exc}", file=sys.stderr)
         return 2
 
     from autojepa.models.ema import assert_no_grad_on_target
 
     pl.seed_everything(int(_hp("seed", 0)), workers=True)
+
+    t_start = time.monotonic()
 
     # Device selection. Basilica nodes have GPU; local CPU is fallback.
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -149,6 +199,16 @@ def main() -> int:
         metrics={"canary_loss": canary_loss, "probe_auroc": 0.0},
     )
     if canary_loss > CANARY_LOSS_THRESHOLD:
+        elapsed = time.monotonic() - t_start
+        _write_outcome(
+            model_dir=ARTIFACT_DIR,
+            status="failed",
+            metrics={"canary_loss": float(canary_loss)},
+            elapsed_s=elapsed,
+            completed_steps=0,
+            step_target=MAX_STEPS,
+            reason=f"canary_loss={canary_loss:.4f} > threshold={CANARY_LOSS_THRESHOLD}",
+        )
         print(
             f"FAIL: canary loss {canary_loss:.4f} > {CANARY_LOSS_THRESHOLD}; "
             "data pipeline broken or model under-parameterised",
@@ -211,6 +271,19 @@ def main() -> int:
                 )
                 print(f"step={step} probe_auroc={probe_auroc:.4f}", flush=True)
 
+    elapsed = time.monotonic() - t_start
+    _write_outcome(
+        model_dir=ARTIFACT_DIR,
+        status="ok",
+        metrics={
+            "probe_auroc": float(best_probe_auroc),
+            "loss": float(output.loss.item()),
+            "canary_loss": float(canary_loss),
+        },
+        elapsed_s=elapsed,
+        completed_steps=step,
+        step_target=MAX_STEPS,
+    )
     print(f"final probe_auroc={best_probe_auroc:.4f} after {step} steps", flush=True)
     return 0
 
@@ -300,5 +373,30 @@ def _extract_features(model, x_uint8, batch_size: int, device):
     return torch.cat(parts, dim=0)
 
 
+def _entrypoint() -> int:
+    """Wrap main() so any uncaught exception still writes outcome.json.
+
+    Without this, a crash before the success/failure path leaves the
+    basilica adapter waiting on the timeout — exactly the failure mode
+    that motivated this contract.
+    """
+    t_start = time.monotonic()
+    try:
+        return main()
+    except SystemExit:
+        raise
+    except BaseException as exc:
+        elapsed = time.monotonic() - t_start
+        _write_outcome(
+            model_dir=ARTIFACT_DIR,
+            status="failed",
+            metrics={},
+            elapsed_s=elapsed,
+            reason=f"unhandled_exception: {type(exc).__name__}: {exc}",
+        )
+        traceback.print_exc()
+        return 3
+
+
 if __name__ == "__main__":
-    sys.exit(main())
+    sys.exit(_entrypoint())
