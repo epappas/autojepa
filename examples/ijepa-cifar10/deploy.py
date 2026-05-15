@@ -59,24 +59,35 @@ def _build_file_injection_cmd() -> str:
 def _build_setup_cmd(git_ref: str) -> str:
     """Compose the container setup: pip install + file injection.
 
-    Slim install: skip transformers + webdataset (the [jepa] extra
-    pulls them but ijepa-cifar10 needs neither — transformers is for
-    text encoders, webdataset is for trace-jepa shards). The slim
-    install drops ~1.5 GB and ~10 minutes off setup_cmd time on a
-    fresh Basilica container.
+    Trimmed install: the [jepa] aggregator extra pulls webdataset
+    (~10 MB) which ijepa-cifar10 does not use (it's for trace-jepa
+    shards). transformers + datasets are unfortunately HARD imports
+    of stable-pretraining v0.1.x (`import stable_pretraining` itself
+    pulls them) so we cannot omit them. Verified live on commit
+    d23af7c — that build crashed because spt could not import.
+
+    Setup_cmd order:
+    1. Install heavy GPU/ML deps via pip in one batch (best wheel
+       resolution + cache locality).
+    2. Install autojepa core deps.
+    3. Install autojepa from git WITHOUT extras (we already installed
+       what we need).
+    4. Inject train.py + prepare.py via base64.
+    5. Sanity-import to fail fast if anything is missing.
     """
     deps = (
         "pip install --no-cache-dir "
         "torch>=2.4 lightning>=2.4 torchmetrics>=1.4 torchvision "
+        "transformers>=4.44 datasets "
         "'stable-pretraining>=0.1.6,<0.2' timm"
-    )
-    autojepa = (
-        f"pip install --no-cache-dir --no-deps "
-        f"'autojepa @ git+https://github.com/epappas/autojepa.git@{git_ref}'"
     )
     autojepa_deps = (
         "pip install --no-cache-dir 'numpy>=1.24' 'pydantic>=2.7' "
         "'pyyaml>=6.0' 'typer>=0.12' 'basilica-sdk>=0.20'"
+    )
+    autojepa = (
+        f"pip install --no-cache-dir --no-deps "
+        f"'autojepa @ git+https://github.com/epappas/autojepa.git@{git_ref}'"
     )
     file_inject = _build_file_injection_cmd()
     sanity = (
