@@ -17,7 +17,7 @@ import pytest
 torch = pytest.importorskip("torch")
 spt = pytest.importorskip("stable_pretraining")
 
-from autojepa.models.losses import (
+from autojepa.models.losses import (  # noqa: E402
     LOSS_REGISTRY,
     BarlowTwinsLoss,
     BYOLLoss,

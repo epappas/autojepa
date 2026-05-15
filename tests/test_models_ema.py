@@ -17,7 +17,7 @@ import pytest
 torch = pytest.importorskip("torch")
 spt = pytest.importorskip("stable_pretraining")
 
-from autojepa.models.ema import (
+from autojepa.models.ema import (  # noqa: E402
     DEFAULT_BASE_EMA,
     DEFAULT_FINAL_EMA,
     EMAConfig,

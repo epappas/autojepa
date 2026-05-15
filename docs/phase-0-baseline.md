@@ -40,11 +40,11 @@ These will only change when Phase 1 introduces JEPA-specific calibration (foreca
 
 ## Validation evidence
 
-Verified by running the full inherited suite on 2026-05-15 against the renamed package:
+Verified by running the full suite on 2026-05-15 against the renamed package:
 
 ```
 $ uv run pytest -q --ignore=tests/eval/test_real_llm.py
-9 failed, 470 passed, 5 skipped in 23.70s
+9 failed, 470 passed, 5 skipped in 23.70s   # initial Phase-0 baseline
 
 $ uv run ruff check src/ tests/
 All checks passed!
@@ -58,9 +58,30 @@ Usage: autojepa [OPTIONS] COMMAND [ARGS]...
   Commands: run, validate, print-config, status, run-one, upload
 ```
 
-### Test failure analysis (the 9)
+After Phase-1 batch-7 legacy drops + example-smoke parametrize adapt
+(commit batch 7, 2026-05-15):
 
-All 9 failures share a single root cause: tests reference `examples/<name>/prepare.py` paths that point at fixtures from the upstream `autoresearch-rl` `examples/` tree which was deliberately not carried over. **None of the failures are caused by the rename pass or by missing functionality.**
+```
+$ uv run pytest -q --ignore=tests/eval/test_real_llm.py
+555 passed, 7 skipped in 51.96s   # zero failures
+$ uv run ruff check src/ tests/
+All checks passed!
+$ uv run mypy src/
+Success: no issues found in 68 source files
+```
+
+### Test failure analysis (the 9 — historical)
+
+The original 9 failures all referenced upstream `examples/` fixtures
+deliberately not carried over (ADR-006). They have been resolved as
+follows during Phase-1:
+
+- 4 failures (`test_loop_autonomy.py x3`, `test_scaffold.py`) dropped
+  with the legacy `controller/loop.py` module per inheritance map §10.3.
+- 5 failures (`test_examples_smoke.py`) resolved by adapting the
+  `TIER1_FULL_RUN` and `TIER2_VALIDATE_ONLY` parametrize lists to
+  empty until Phase-2 lands `examples/ijepa-cifar10/` (per
+  inheritance map §10.2 Adapt).
 
 | Test | Missing fixture | Resolution |
 |---|---|---|

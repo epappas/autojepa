@@ -15,7 +15,7 @@ import pytest
 
 torch = pytest.importorskip("torch")
 
-from autojepa.masking import CompositeMask, MaskOutput, MultiBlockInfillMask
+from autojepa.masking import CompositeMask, MaskOutput, MultiBlockInfillMask  # noqa: E402
 
 pytestmark = pytest.mark.jepa
 

@@ -86,11 +86,16 @@ def _parse_run_json(stdout: str) -> dict:
 # ---------------------------------------------------------------- Tier 1: full run
 
 
-# (example_dir, runs_to_completion_in_ci_with_stub_credentials)
-TIER1_FULL_RUN = [
-    "examples/minimal-trainable-target",
-    "examples/autoresearch-like",
-]
+# Examples whose CLI campaigns must run end-to-end with stub credentials.
+#
+# Empty in Phase-1 because AutoJEPA deliberately did not carry over the
+# upstream autoresearch-rl examples (115 MB of model artifacts; see
+# ADR-006). Phase-2 adds `examples/ijepa-cifar10/` which becomes the
+# first Tier-1 entry. Phase-3 adds `examples/trace-jepa/`.
+#
+# Pytest collects zero parametrized cases when this list is empty,
+# which is the correct behaviour: no examples yet -> nothing to smoke.
+TIER1_FULL_RUN: list[str] = []
 
 
 @pytest.mark.parametrize("example_dir", TIER1_FULL_RUN)
@@ -133,11 +138,11 @@ def test_llm_diff_example_produces_real_best_value(
 
 # Examples that need real GPU / heavy ML deps to actually run, but whose
 # config + target-construction path we can still smoke-test via 'validate'.
-TIER2_VALIDATE_ONLY = [
-    "examples/basilica-grpo",
-    "examples/security-judge",
-    "examples/deberta-prompt-injection",
-]
+#
+# Empty in Phase-1 (see TIER1_FULL_RUN comment + ADR-006). Phase-3
+# trace-jepa is a candidate Tier-2 entry until we have a way to mock
+# its data pipeline cheaply.
+TIER2_VALIDATE_ONLY: list[str] = []
 
 
 @pytest.mark.parametrize("example_dir", TIER2_VALIDATE_ONLY)

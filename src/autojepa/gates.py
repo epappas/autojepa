@@ -153,7 +153,11 @@ class GateRequirementConfig(BaseModel):
         if m is None:
             raise ValueError(f"unparseable expression: {self.expr!r}")
         op_raw, threshold_raw = m.group(1), m.group(2)
-        return GateRequirement(metric=self.metric, op=op_raw, threshold=float(threshold_raw))
+        # _OP_PATTERN restricts group(1) to _VALID_OPS; the cast is
+        # for mypy's benefit since regex groups are typed as `str | Any`.
+        from typing import cast
+        op = cast(GateOp, op_raw)
+        return GateRequirement(metric=self.metric, op=op, threshold=float(threshold_raw))
 
 
 class GateConfig(BaseModel):

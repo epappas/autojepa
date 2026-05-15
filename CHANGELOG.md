@@ -13,6 +13,77 @@ research codebase, not a published library.
 
 (Future work goes here.)
 
+## [2026-05-15] — Phase 1 complete: JEPA primitives library
+
+Six commits adding the JEPA-specific primitives the writeup §7 calls
+out. The framework now has a complete importable JEPA toolkit; Phase-2
+adds the first runnable example (`examples/ijepa-cifar10/`).
+
+### Added
+
+- `src/autojepa/eval/collapse.py` — RankMe, effective_rank,
+  latent_variance (framework-free per ADR-007)
+- `src/autojepa/eval/probes.py` — `build_linear_probe`,
+  `build_knn_probe`, `build_rankme`, `build_lidar`, `default_probes`
+  factories wrapping `stable_pretraining.callbacks` (ADR-003 + ADR-011)
+- `src/autojepa/eval/canary.py` — sanity-overfit canary as a
+  special-case `gates.Gate` (writeup §7.4)
+- `src/autojepa/masking/{primitives,composite}.py` — `MultiBlockInfillMask`
+  (I-JEPA defaults), `CompositeMask` weighted combinator
+- `src/autojepa/models/ema.py` — `EMAConfig`, `build_target_encoder`
+  facade over `stable_pretraining.TeacherStudentWrapper`,
+  `assert_no_grad_on_target` invariant
+- `src/autojepa/models/losses.py` — `LOSS_REGISTRY` + `l1_loss`,
+  `l2_loss` + facade re-exports of spt SSL loss zoo
+- `src/autojepa/gates.py` — decision-gate engine (writeup §7.6)
+- `src/autojepa/policy/_prompt_fragments.py::JEPA_HARD_RULES` wired
+  into both `llm_diff` and `llm_search` system prompts
+- 13 ADRs total (`docs/adr/001` through `docs/adr/013`)
+
+### Changed
+
+- `src/autojepa/config.py::ObjectiveConfig` defaults: `metric`
+  `val_bpb` → `probe_auroc`; `direction` `min` → `max` (ADR-004)
+- `src/autojepa/config.py::IntraIterationCancelConfig` defaults:
+  `min_steps` 5 → 2000; `poll_interval_s` 5.0 → 30.0;
+  `min_reports_before_decide` 5 → 10 (ADR-008 + ADR-013)
+- `src/autojepa/controller/intra_iteration.py::GuardConfig` mirror
+  defaults match
+- `src/autojepa/policy/hybrid.py::HybridPolicy` defaults:
+  `param_explore_iters` 5 → 25; `stall_threshold` 3 → 5;
+  `diff_failure_limit` 3 → 5 (writeup §6.3 / §12.5)
+- `pyproject.toml`: pin `stable-pretraining>=0.1.6,<0.2` in `[jepa]`
+  extra; mypy override for `stable_pretraining.*` (no py.typed)
+
+### Removed
+
+Per inheritance map §10.3:
+- `src/autojepa/controller/loop.py` (legacy loop)
+- `src/autojepa/sandbox/runner.py` (legacy trial runner)
+- `src/autojepa/eval/{judge,scoring}.py` (legacy heuristic scoring)
+- `src/autojepa/distillation/` (entire legacy directory)
+- `SandboxExecutor`, `SandboxExecutorConfig`, `JudgeEvaluator`
+  classes from `controller/executor.py` (dead code)
+- `tests/{test_loop_autonomy, test_loop_comparability, test_scaffold,
+  test_runner, test_runner_forecast, test_distillation_sink,
+  test_distillation_trainer, test_sdft}.py` (legacy module tests)
+
+### Verified evidence
+
+```
+$ uv run pytest -q --ignore=tests/eval/test_real_llm.py
+555 passed, 7 skipped in 51.96s
+$ uv run ruff check src/ tests/
+All checks passed!
+$ uv run mypy src/
+Success: no issues found in 68 source files
+$ uv run autojepa --help
+Usage: autojepa [OPTIONS] COMMAND [ARGS]...
+```
+
+Zero failures (was 9 at start of Phase-1; resolved by legacy drops +
+example-smoke parametrize adapt).
+
 ## [2026-05-15] — AutoJEPA forked from autoresearch-rl
 
 Phase 0 — Bootstrap. Clean fork of `autoresearch-rl` (sibling at

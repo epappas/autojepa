@@ -14,7 +14,7 @@ torch = pytest.importorskip("torch")
 spt = pytest.importorskip("stable_pretraining")
 pl = pytest.importorskip("lightning.pytorch")
 
-from autojepa.eval.probes import (
+from autojepa.eval.probes import (  # noqa: E402
     ProbeBundle,
     build_knn_probe,
     build_lidar,

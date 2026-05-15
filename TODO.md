@@ -124,6 +124,16 @@
 
 ---
 
+## Phase 1 — Legacy module drops (per inheritance map §10.3)
+
+- [x] Drop `controller/loop.py` (legacy entry; live path is `controller/continuous.py`)
+- [x] Drop `sandbox/runner.py` (legacy trial runner)
+- [x] Drop `eval/judge.py`, `eval/scoring.py` (legacy heuristic scoring)
+- [x] Drop `distillation/{__init__,sdft,sink,trainer}.py` (entire legacy directory)
+- [x] Drop `SandboxExecutor`, `SandboxExecutorConfig`, `JudgeEvaluator` from `controller/executor.py` (dead classes; live path uses `TargetExecutor` + `MetricEvaluator`)
+- [x] Drop tests for dropped modules: `test_loop_autonomy.py`, `test_loop_comparability.py`, `test_scaffold.py`, `test_runner.py`, `test_runner_forecast.py`, `test_distillation_sink.py`, `test_distillation_trainer.py`, `test_sdft.py`
+- [x] Adapt `tests/test_examples_smoke.py` parametrize lists to empty until Phase-2 lands AutoJEPA examples
+
 ## Standing tasks
 
 - [ ] **Docs sync rule**: every code change affecting architecture, contracts, or campaigns updates the corresponding `docs/` entry in the same commit

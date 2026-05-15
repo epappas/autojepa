@@ -10,13 +10,11 @@ Marked `jepa` because the module imports torch (installed via the
 
 from __future__ import annotations
 
-import math
-
 import pytest
 
 torch = pytest.importorskip("torch")
 
-from autojepa.eval.collapse import effective_rank, latent_variance, rankme
+from autojepa.eval.collapse import effective_rank, latent_variance, rankme  # noqa: E402
 
 pytestmark = pytest.mark.jepa
 

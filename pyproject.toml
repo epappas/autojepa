@@ -56,3 +56,9 @@ markers = [
 [tool.ruff]
 line-length = 100
 extend-exclude = ["tests/eval/fixtures"]
+
+# stable-pretraining v0.1.x ships no py.typed marker; suppress the
+# import-untyped warnings without enabling implicit-Any everywhere.
+[[tool.mypy.overrides]]
+module = ["stable_pretraining.*"]
+ignore_missing_imports = true
