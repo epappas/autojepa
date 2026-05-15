@@ -160,10 +160,50 @@ Setup_cmd is installing `autojepa[jepa] @ git+https://github.com/epappas/autojep
 stable-pretraining + webdataset + timm + transitive deps. Estimated
 container ready time: 5-10 minutes from container start.
 
-**Status**: in flight. Iter 0 deployment is Active, container booting.
-Per-iteration ETA on A100: ~10-30 min for 200-step canary + 6000-step
-pretrain at batch=128. Total 3-iter ETA: 30-90 min from campaign start
-(plus ~5 min container boot per iter unless container is reused).
+### Iter 0 outcome (smoke v1, commit `555386f`) — FAILED
+
+```
+status:   failed
+decision: discard
+metrics:  {}
+elapsed:  607.5 s
+stdout:   ""
+stderr:   "not_ready"
+```
+
+**Root cause**: the Basilica adapter's default `ready_timeout_s: 600`
+is too tight for the heavy `setup_cmd`. `pip install autojepa[jepa] @
+git+https://...` pulls torch + lightning + torchvision + transformers
++ stable-pretraining + timm + transitives (~3-4 GB) on a fresh
+container — reliably > 10 min on first install. The adapter
+correctly marked the container `not_ready` at 600 s while pip was
+still working.
+
+**Fix** (commit `b467ca8`): bumped
+`target.basilica.ready_timeout_s: 1800` (30 min). This exercises the
+inherited `055e894 fix(basilica): make ready_timeout_s configurable`
+upstream improvement listed in the cherry-pick log seeds — first
+real use in AutoJEPA.
+
+The LLM-failure resilience evidence from v1 still holds: Chutes 503 →
+exponential backoff → seeded-random fallback worked. The `not_ready`
+failure was strictly an infrastructure-timing issue, not a code or
+contract issue.
+
+**v1 campaign stopped** at iter 1 (which was retrying LLM with 429s).
+
+### Smoke v2 (commit `b467ca8`) — RELAUNCHED
+
+```
+$ uv run python3 examples/ijepa-cifar10/deploy.py --max-iterations 3 --git-ref b467ca8
+```
+
+Background task `baljfic4a`. Monitor `bp4c1xvws` watching
+`traces/ijepa-cifar10/events.jsonl` for outcome events.
+
+Status: in flight. Per-iter ETA on A100 with the bumped timeout:
+~12-15 min container boot (heavy install) + ~10-30 min training =
+~25-45 min/iter. Total 3-iter ETA: ~75-135 min.
 
 ### Why a 3-iter smoke before the full 20-iter campaign
 
