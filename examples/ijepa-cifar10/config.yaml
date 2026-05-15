@@ -24,14 +24,15 @@ target:
     cpu: "8"
     storage: "/data"
     ttl_seconds: 4200
-    # 30-min container-ready timeout. setup_cmd pip-installs
-    # autojepa[jepa] from git which pulls torch + lightning +
-    # torchvision + transformers + stable-pretraining + timm + transitives
-    # (~3-4 GB), reliably exceeding the 10-min default. Discovered live
-    # on iter 0 of the 3-iter smoke (commit d67500c): container marked
-    # `not_ready` by the adapter at 600s exactly while pip install was
-    # still in progress on Basilica.
-    ready_timeout_s: 1800
+    # 60-min container-ready timeout. setup_cmd pip-installs torch +
+    # lightning + torchvision + stable-pretraining + timm + autojepa
+    # core (~2-2.5 GB after deploy.py's slim-install change). 1800s
+    # (30 min) hit at exactly elapsed=1805s on iter 0 v2 (commit
+    # b467ca8) — Basilica's pip wheel-resolution step is the bottleneck.
+    # 3600s is the safety budget; a Phase-4 hardening task will bake a
+    # custom Docker image with all deps pre-installed to drop this
+    # back to <60s.
+    ready_timeout_s: 3600
     # NOTE: Use deploy.py rather than `autojepa run config.yaml` directly.
     # deploy.py reads train.py + prepare.py locally, base64-encodes them,
     # and injects them into /app/ via this setup_cmd. Pip-installing

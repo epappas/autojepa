@@ -57,17 +57,33 @@ def _build_file_injection_cmd() -> str:
 
 
 def _build_setup_cmd(git_ref: str) -> str:
-    """Compose the full container setup: pip install + file injection."""
-    pip_install = (
-        f"pip install --no-cache-dir "
-        f"'autojepa[jepa] @ git+https://github.com/epappas/autojepa.git@{git_ref}'"
+    """Compose the container setup: pip install + file injection.
+
+    Slim install: skip transformers + webdataset (the [jepa] extra
+    pulls them but ijepa-cifar10 needs neither — transformers is for
+    text encoders, webdataset is for trace-jepa shards). The slim
+    install drops ~1.5 GB and ~10 minutes off setup_cmd time on a
+    fresh Basilica container.
+    """
+    deps = (
+        "pip install --no-cache-dir "
+        "torch>=2.4 lightning>=2.4 torchmetrics>=1.4 torchvision "
+        "'stable-pretraining>=0.1.6,<0.2' timm"
+    )
+    autojepa = (
+        f"pip install --no-cache-dir --no-deps "
+        f"'autojepa @ git+https://github.com/epappas/autojepa.git@{git_ref}'"
+    )
+    autojepa_deps = (
+        "pip install --no-cache-dir 'numpy>=1.24' 'pydantic>=2.7' "
+        "'pyyaml>=6.0' 'typer>=0.12' 'basilica-sdk>=0.20'"
     )
     file_inject = _build_file_injection_cmd()
     sanity = (
         'python3 -c "import autojepa, stable_pretraining; '
-        "print('autojepa', autojepa.__name__, 'spt', stable_pretraining.__version__)\""
+        "print('autojepa OK; spt', stable_pretraining.__version__)\""
     )
-    return f"{pip_install} && {file_inject} && {sanity}"
+    return f"{deps} && {autojepa_deps} && {autojepa} && {file_inject} && {sanity}"
 
 
 def main() -> int:
