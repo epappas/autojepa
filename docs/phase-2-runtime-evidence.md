@@ -206,35 +206,54 @@ hard-imports both transformers AND datasets at package import time
 (despite shipping a separate dependency for them). v3 stopped before
 Basilica deployment to save the wasted GPU time.
 
-### Smoke v4 (commit `5ab0262`) — IN FLIGHT, container ready in ~30s
+### Smoke v4 (commit `5ab0262`) — silent crash-loop, killed after 1h
 
 Restored transformers + datasets in setup_cmd; only webdataset stays
 out (verified `'webdataset' not in sys.modules` after spt import).
-Bumped `ready_timeout_s: 3600` (1 hour) as belt-and-suspenders.
+Bumped `ready_timeout_s: 3600` (1 hour).
+
+Deployment `ar-train-f286c5ea` came up Active with ready=1 in ~30s
+(Basilica cached the pip wheels from earlier attempts). But no
+`emit_progress` calls reached the controller for >1 hour. Pulled
+deployment events via the SDK:
 
 ```
-$ uv run python3 examples/ijepa-cifar10/deploy.py --max-iterations 3 --git-ref 5ab0262
+type: Warning  reason: BackOff
+message: "Back-off restarting failed container ... in CONTAINER_EXITED state"
+count: 74        # k8s tried 74 times
 ```
 
-Background task `b0pw7yaki`. Deployment came up:
+The container was crash-looping. Basilica's logs API returned 502s
+during the diagnostic so we couldn't read container stdout — had to
+reason from local code.
+
+**Root cause** (commit `38d6251`): `train.py` never moved the IJEPA
+model or input tensors to CUDA. On Basilica's GPU container the model
+ran on the relatively weak node CPU at batch=128 ViT-Tiny @ 224x224
+— each forward+backward ~2 min. The 200-step canary alone would take
+~7 hours; the deployment TTL (4200s = 70 min) killed the container
+long before the first `emit_progress`.
+
+**Why local integration test missed it**: I tested batch=2 on CPU
+which took 4-6s per step. Slow but bounded. Batch=128 scales the
+forward time linearly — a regime change my test didn't cover. A
+custom Docker image with `nvidia-smi` in setup_cmd would have caught
+this immediately (Phase-4 hardening note).
+
+### Smoke v5 (commit `38d6251`) — RELAUNCHED with the device fix
 
 ```
-friendly_name: ar-train-f286c5ea
-state:         Active
-replicas:      desired=1 ready=1
-created_at:    2026-05-15T12:24:49 UTC
+$ uv run python3 examples/ijepa-cifar10/deploy.py --max-iterations 3 --git-ref 38d6251
 ```
 
-**Surprise observation**: container ready in ~30s vs the >30 min cold
-boot we saw on v1/v2. Hypothesis: Basilica caches pip wheel files
-between deployments on the same node, so subsequent installs hit a
-warm wheel cache. If this holds across iters, the per-iter overhead
-drops from ~30 min → ~30s, making the full 20-iter campaign budget
-~$5-15 instead of $30-100. Verifying with iter 0 outcome.
+Background task `bra2yqsmr`. Monitor `bo57hi0jz` armed on
+events.jsonl. ETA per iter on A100:
+- prepare.py CIFAR download: ~30s
+- canary 200 steps: ~10-20s on GPU
+- pretrain 6000 steps + 12 probe-eval rounds: ~5-8 min
+- Total iter: ~10 min
 
-Status: training in progress on the warm container. ETA: ~10-20 min
-per iter for 6200 training steps (200 canary + 6000 pretrain) on A100
-+ 12 probe-eval rounds.
+3-iter ETA: ~30-45 min from launch (assuming wheel cache holds).
 
 ### Why a 3-iter smoke before the full 20-iter campaign
 
