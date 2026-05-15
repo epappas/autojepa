@@ -119,6 +119,45 @@
 - [ ] Decision gate: `probe AUROC > 0.7 at 5% FPR` after 20 iters → abort if missed
 - [ ] **Deliverable**: AutoJEPA validates or kills the Trace-JEPA thesis
 
+### Phase-3 search-space dimensions — codebook bottleneck (per MTS-JEPA)
+
+The Phase-3 `examples/trace-jepa/config.yaml` parameter space (still to be
+written) **must** include the following two dimensions, motivated by
+[mts-jepa.md](docs/research/mts-jepa.md) and the
+`topic=Trace-JEPA-Design` belief in Alexandria (asserted 2026-05-15):
+
+```yaml
+codebook_size: [0, 64, 256, 1024]   # 0 = vanilla JEPA, no codebook
+codebook_loss_weight: [0.0, 0.1, 0.5, 1.0]
+```
+
+Search-dimension rationale (one sentence per dimension, citing the
+MTS-JEPA distillation):
+
+- `codebook_size`: per [mts-jepa.md](docs/research/mts-jepa.md), the soft
+  codebook bottleneck is the only published JEPA mechanism aimed at
+  discrete-regime-transition modeling — varying its vocabulary from `0`
+  (vanilla JEPA control) through `1024` measures whether agent-trace
+  regime structure (tool-call switches, role boundaries, plan re-entries)
+  benefits from a discrete latent vocabulary at all and at what
+  granularity.
+- `codebook_loss_weight`: per [mts-jepa.md](docs/research/mts-jepa.md),
+  the codebook constraint also acts as an intrinsic anti-collapse
+  regularizer — sweeping the loss weight from `0.0` (off) through `1.0`
+  measures the codebook's contribution as a regularizer separately from
+  its role as a latent-vocabulary carrier, so the search can attribute
+  any gain to representation structure vs collapse defense.
+
+Phase-2 scope guard (`examples/ijepa-cifar10/`): **do NOT add these
+dimensions to Phase-2**. Phase-2 is the kill-criterion run and must stay
+vanilla I-JEPA to be a fair reproduction (per ADR-014 — deliberately
+suboptimal vanilla baseline).
+
+Framework scope guard: **do NOT add the codebook to the core framework**
+(`src/autojepa/models/`). The codebook is a Phase-3 trace-jepa example
+concern, not a framework primitive — putting it in core would repeat the
+contrib-namespace mistake AutoJEPA explicitly rejected.
+
 ---
 
 ## Phase 4 — Hardening for Basilica production (W5-6)
