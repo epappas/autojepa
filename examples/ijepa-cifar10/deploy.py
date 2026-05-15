@@ -59,22 +59,27 @@ def _build_file_injection_cmd() -> str:
 def _build_setup_cmd(git_ref: str) -> str:
     """Compose the container setup: pip install + file injection.
 
-    Trimmed install: the [jepa] aggregator extra pulls webdataset
+    The Basilica base image (`pytorch/pytorch:...-cudnn9-devel`) does
+    NOT ship `git`. pip cannot install `autojepa @ git+https://...`
+    without it, so the first step apt-installs git. Verified live
+    by reading container logs via kubectl — every prior attempt
+    (commits 555386f / b467ca8 / 5ab0262 / 38d6251) crash-looped
+    here with: `ERROR: Cannot find command 'git'`.
+
+    Trimmed pip install: the [jepa] aggregator extra pulls webdataset
     (~10 MB) which ijepa-cifar10 does not use (it's for trace-jepa
-    shards). transformers + datasets are unfortunately HARD imports
-    of stable-pretraining v0.1.x (`import stable_pretraining` itself
-    pulls them) so we cannot omit them. Verified live on commit
-    d23af7c — that build crashed because spt could not import.
+    shards). transformers + datasets are HARD imports of stable-
+    pretraining v0.1.x so they stay in.
 
     Setup_cmd order:
-    1. Install heavy GPU/ML deps via pip in one batch (best wheel
-       resolution + cache locality).
-    2. Install autojepa core deps.
-    3. Install autojepa from git WITHOUT extras (we already installed
-       what we need).
-    4. Inject train.py + prepare.py via base64.
-    5. Sanity-import to fail fast if anything is missing.
+    1. apt-install git (~30 s).
+    2. Heavy GPU/ML pip batch.
+    3. autojepa core deps pip batch.
+    4. autojepa from git WITHOUT extras.
+    5. Inject train.py + prepare.py via base64.
+    6. Sanity-import + nvidia-smi check.
     """
+    apt = "apt-get update -qq && apt-get install -y -qq git"
     deps = (
         "pip install --no-cache-dir "
         "torch>=2.4 lightning>=2.4 torchmetrics>=1.4 torchvision "
@@ -91,10 +96,14 @@ def _build_setup_cmd(git_ref: str) -> str:
     )
     file_inject = _build_file_injection_cmd()
     sanity = (
-        'python3 -c "import autojepa, stable_pretraining; '
-        "print('autojepa OK; spt', stable_pretraining.__version__)\""
+        'python3 -c "import autojepa, stable_pretraining, torch; '
+        "print('autojepa OK; spt', stable_pretraining.__version__, "
+        "'cuda', torch.cuda.is_available(), 'devices', torch.cuda.device_count())\""
     )
-    return f"{deps} && {autojepa_deps} && {autojepa} && {file_inject} && {sanity}"
+    return (
+        f"{apt} && {deps} && {autojepa_deps} && {autojepa} "
+        f"&& {file_inject} && {sanity}"
+    )
 
 
 def main() -> int:
