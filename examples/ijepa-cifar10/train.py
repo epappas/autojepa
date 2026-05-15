@@ -247,6 +247,13 @@ def _run_linear_probe(model, data_dir: Path) -> float:
 
 
 def _extract_features(model, x, batch_size: int):
+    """Extract per-image embeddings from the EMA target encoder.
+
+    The stable-pretraining MaskedEncoder returns a `MaskedEncoderOutput`
+    namedtuple with `.encoded` (B, N+cls, D), `.grid_size`, `.ids_keep`,
+    `.mask`. We average over patch tokens (excluding the CLS token if
+    present) to get (B, D) probe features.
+    """
     import torch
 
     parts: list[torch.Tensor] = []
@@ -254,13 +261,11 @@ def _extract_features(model, x, batch_size: int):
         batch = x[i : i + batch_size]
         with torch.no_grad():
             out = model.encoder.forward_teacher(batch)
-        # Average over patch tokens -> (B, embed_dim)
-        if hasattr(out, "predictions"):
-            feats = out.predictions
-        else:
-            feats = out
+        feats = out.encoded if hasattr(out, "encoded") else out
         if feats.ndim == 3:
-            feats = feats.mean(dim=1)
+            # Drop CLS token if encoder uses one (vit_tiny does), then mean-pool.
+            num_prefix = getattr(out, "num_prefix_tokens", 1)
+            feats = feats[:, num_prefix:].mean(dim=1)
         parts.append(feats)
     return torch.cat(parts, dim=0)
 
