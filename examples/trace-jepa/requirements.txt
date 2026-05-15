@@ -1,0 +1,2 @@
+autojepa[jepa]
+webdataset>=0.2

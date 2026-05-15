@@ -1,0 +1,107 @@
+name: trace-jepa
+
+program_path: examples/trace-jepa/program.md
+
+objective:
+  metric: probe_auroc
+  direction: max
+
+target:
+  type: basilica
+  workdir: examples/trace-jepa
+  timeout_s: 5400
+  prepare_cmd:
+    - python3
+    - /app/prepare.py
+    - --n-sessions
+    - "100000"
+  train_cmd:
+    - python3
+    - /app/train.py
+  basilica:
+    # Once the Phase-2 runtime image (ghcr.io/epappas/autojepa-runtime:phase2)
+    # is pushed by the sibling sub-agent, switch this image string and
+    # drop the heavy pip block from setup_cmd. Until then we stay on
+    # the same vanilla pytorch base image Phase-2 used and rely on the
+    # full setup_cmd path. See examples/ijepa-cifar10/Dockerfile +
+    # build_image.sh for the baked-image build / push procedure.
+    image: pytorch/pytorch:2.4.1-cuda12.4-cudnn9-devel
+    gpu_count: 1
+    gpu_models: ["A100", "H100", "L40S", "RTX-4090", "RTX-A6000"]
+    memory: "32Gi"
+    cpu: "8"
+    storage: "/data"
+    ttl_seconds: 6000
+    # Same 60-min container-ready budget rationale as Phase-2: the
+    # setup_cmd cold-installs torch+lightning+spt+timm+webdataset; the
+    # trace-jepa example additionally needs webdataset (~10 MB) which
+    # Phase-2 omits. Drop this back to <60s once the baked image lands.
+    ready_timeout_s: 3600
+    # NOTE: Use deploy.py rather than `autojepa run config.yaml` directly.
+    # deploy.py reads train.py + prepare.py locally, base64-encodes them,
+    # and injects them into /app/. Pip-installing autojepa from GitHub
+    # provides autojepa.* imports but NOT examples/.
+    setup_cmd: |
+      pip install --no-cache-dir 'autojepa[jepa] @ git+https://github.com/epappas/autojepa.git@HEAD' && \
+      python -c "from autojepa import cli; print('autojepa importable — but train.py/prepare.py NOT injected; use deploy.py')"
+
+policy:
+  type: hybrid
+  mutable_file: examples/trace-jepa/train.py
+  frozen_file: examples/trace-jepa/prepare.py
+  program_file: examples/trace-jepa/program.md
+  params:
+    learning_rate: [0.00005, 0.0001, 0.0003, 0.0005]
+    weight_decay: [0.0, 0.05, 0.1]
+    batch_size: [32, 64, 128]
+    max_steps: [2000, 4000, 6000]
+    encoder_depth: [4, 6, 8]
+    encoder_dim: [256, 384, 512]
+    encoder_heads: [4, 6, 8]
+    predictor_depth: [1, 2, 3, 4]
+    predictor_embed_dim: [64, 128, 192]
+    num_targets: [2, 4, 6]
+    ema_decay_start: [0.99, 0.996, 0.999]
+    # Phase-3 search axes per docs/research/mts-jepa.md and TODO.md
+    # Phase-3 (codebook_size=0 is the vanilla JEPA control row).
+    codebook_size: [0, 64, 256, 1024]
+    codebook_loss_weight: [0.0, 0.1, 0.5, 1.0]
+    future_block_weight: [0.5, 1.0, 2.0]
+    multi_block_weight: [0.0, 0.5, 1.0]
+    probe_eval_every_n_steps: [500]
+  llm_api_url: "https://llm.chutes.ai/v1"
+  llm_model: "deepseek-ai/DeepSeek-V3-0324"
+  llm_api_key_env: "CHUTES_API_KEY"
+  llm_timeout_s: 60
+  hybrid_param_explore_iters: 25
+  hybrid_stall_threshold: 5
+  hybrid_diff_failure_limit: 5
+
+controller:
+  # Phase-3 campaign budget per writeup §11 — 30 iters > Phase-2's 20
+  # because the codebook_size + codebook_loss_weight axes inflate the
+  # per-iter search space.
+  max_iterations: 30
+  max_wall_time_s: 172800
+  no_improve_limit: 10
+  failure_rate_limit: 0.7
+  failure_window: 6
+  checkpoint_path: artifacts/trace-jepa/checkpoint.json
+  intra_iteration_cancel:
+    enabled: true
+    min_steps: 2000
+    poll_interval_s: 30.0
+    min_reports_before_decide: 10
+
+comparability:
+  budget_mode: parallel_wallclock
+  expected_budget_s: 172800
+  expected_hardware_fingerprint: null
+  strict: false
+
+telemetry:
+  trace_path: traces/trace-jepa/events.jsonl
+  ledger_path: artifacts/trace-jepa/results.tsv
+  artifacts_dir: artifacts/trace-jepa/runs
+  versions_dir: artifacts/trace-jepa/versions
+  model_output_dir: artifacts/trace-jepa/models
