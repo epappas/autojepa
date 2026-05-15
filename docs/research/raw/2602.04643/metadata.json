@@ -1,0 +1,18 @@
+{
+  "title": "MTS-JEPA: Multi-Resolution Joint-Embedding Predictive Architecture for Time-Series Anomaly Prediction",
+  "authors": [
+    "Yanan He",
+    "Yunshi Wen",
+    "Xin Wang",
+    "Tengfei Ma"
+  ],
+  "year": 2026,
+  "arxiv_id": "2602.04643",
+  "url": "https://arxiv.org/abs/2602.04643",
+  "venue": "arXiv (cs.LG)",
+  "submitted": "2026-02-04",
+  "fetched_at": "2026-05-15",
+  "alexandria_raw": "raw/web/arxivorg-abs-260204643.md",
+  "alexandria_wiki": "wiki/JEPA-Security/arxivorg-abs-260204643.md",
+  "alexandria_workspace": "global"
+}

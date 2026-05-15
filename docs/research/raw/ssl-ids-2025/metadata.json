@@ -1,0 +1,44 @@
+{
+  "title": "SSL-IDS Landscape (2025) — Combined Raw Reference",
+  "papers": [
+    {
+      "title": "Self-Supervised Learning of Graph Representations for Network Intrusion Detection",
+      "short_name": "GraphIDS",
+      "arxiv_id": "2509.16625",
+      "url": "https://arxiv.org/abs/2509.16625",
+      "venue": "NeurIPS 2025",
+      "ssl_family": "masked autoencoder",
+      "alexandria_raw": "raw/web/arxivorg-abs-250916625.md"
+    },
+    {
+      "title": "SAFE: Self-Supervised Anomaly Detection Framework for Intrusion Detection",
+      "short_name": "SAFE",
+      "arxiv_id": "2502.07119",
+      "url": "https://arxiv.org/abs/2502.07119",
+      "venue": "AAAI-25 Workshop on AI for Cyber Security",
+      "ssl_family": "masked autoencoder",
+      "alexandria_raw": "raw/web/arxivorg-abs-250207119.md"
+    },
+    {
+      "title": "Contrastive Self-Supervised Network Intrusion Detection using Augmented Negative Pairs",
+      "short_name": "CLAN",
+      "arxiv_id": "2509.06550",
+      "url": "https://arxiv.org/abs/2509.06550",
+      "venue": "IEEE Conference on Cyber Security and Resilience (CSR) 2025",
+      "ssl_family": "contrastive",
+      "alexandria_raw": "raw/web/arxivorg-abs-250906550.md"
+    },
+    {
+      "title": "Self-Supervised Transformer-based Contrastive Learning for Intrusion Detection Systems",
+      "short_name": "Transformer-Contrastive IDS",
+      "arxiv_id": "2505.08816",
+      "url": "https://arxiv.org/abs/2505.08816",
+      "venue": "IFIP Networking 2025",
+      "ssl_family": "contrastive",
+      "alexandria_raw": "raw/web/arxivorg-abs-250508816.md"
+    }
+  ],
+  "fetched_at": "2026-05-15",
+  "alexandria_workspace": "global",
+  "grouped_because": "All four are published 2025 SSL-IDS work; none uses JEPA. They are Phase-3 non-JEPA baselines for Trace-JEPA."
+}

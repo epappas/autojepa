@@ -1,0 +1,16 @@
+{
+  "title": "Joint Embedding Predictive Architecture for autonomous vehicle safety and security",
+  "identifier": "S1474034626002909",
+  "venue": "ScienceDirect",
+  "year": 2026,
+  "month": "March",
+  "type": "survey / positioning paper (no implementation)",
+  "treatment": "cite-only",
+  "alexandria_workspace": "global",
+  "alexandria_raw": null,
+  "alexandria_belief_topic": "JEPA-Security-Gap",
+  "alexandria_belief_asserted": "2026-05-15",
+  "ingestion_status": "Source page NOT ingested as raw in Alexandria as of 2026-05-15; only the structured belief exists. Verified via grep on the identifier S1474034626002909.",
+  "url_form": "https://www.sciencedirect.com/science/article/pii/S1474034626002909",
+  "fetched_at": "2026-05-15"
+}
