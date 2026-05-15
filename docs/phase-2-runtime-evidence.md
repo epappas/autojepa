@@ -104,7 +104,7 @@ set -a && source /home/epappas/workspace/spacejar/autojepa/.env && set +a
 uv run python3 examples/ijepa-cifar10/deploy.py --max-iterations 3 --git-ref 555386f
 ```
 
-**Initial output** (first 30 s):
+**Initial output** (first ~5 minutes):
 ```
 BASILICA_API_TOKEN set: basilica...
 CHUTES_API_KEY set: cpk_05fc...
@@ -112,12 +112,58 @@ setup_cmd length: 17947 chars
 running from /home/epappas/workspace/spacejar/autojepa ...
 LLM API error 503, retry 1/5 in 12s
 LLM API error 503, retry 2/5 in 24s
+LLM API error 503, retry 3/5 in 42s
+LLM API error 503, retry 4/5 in 89s
+LLM API error 503, retry 5/5 in 98s
+LLM API error 503 (no retry): {"detail":"No instances available (yet) for chute_id='0df3133d-c477-56d2-b4db-f2093bb150a1'"}
+LLM policy failed, falling back to random
+[traceback for the underlying HTTPError, then continues with random fallback]
 ```
 
-The 503 errors are transient Chutes upstream issues; the inherited
-retry loop handles them with exponential backoff (5 retries default).
+The Chutes endpoint hosting `deepseek-ai/DeepSeek-V3-0324` was scaled
+to zero instances at campaign launch time. The inherited LLM provider
+abstraction (writeup §5) handled this correctly:
+- 5-retry exponential backoff (12s + 24s + 42s + 89s + 98s = ~265s)
+- After exhaustion, fell back to seeded-random params
 
-**Status**: in flight. Updated below when the campaign closes.
+This validates the LLM-failure resilience path. Iter 0 proceeded with
+random-fallback params:
+
+```json
+{"learning_rate": 0.0002, "weight_decay": 0.0, "batch_size": 128,
+ "max_steps": 6000, "predictor_depth": 2, "predictor_embed_dim": 128,
+ "num_targets": 4, "ema_decay_start": 0.99,
+ "probe_eval_every_n_steps": 500}
+```
+
+**Iter 0 proposal** captured to `traces/ijepa-cifar10/events.jsonl`:
+
+```
+{"schema": "v1", "run_id": "f1ea56ced9cb", "event_id": "84b7e1d2d53e",
+ "ts": 1778844821, "type": "proposal", "episode_id": "f1ea56ced9cb",
+ "iter": 0, "params": {...}}
+```
+
+**Basilica deployment created** (verified via `basilica.BasilicaClient.list_deployments()`):
+
+```
+friendly_name: ar-train-1f036885
+instance_name: da861cbe-4315-43ef-accd-58bbbfa91ed6
+state:         Active
+replicas:      desired=1 ready=0  (container starting; setup_cmd in progress)
+url:           https://da861cbe-4315-43ef-accd-58bbbfa91ed6.deployments.basilica.ai
+created_at:    2026-05-15T11:33:42 UTC  (= 13:33 local; matches iter 0 proposal ts)
+```
+
+Setup_cmd is installing `autojepa[jepa] @ git+https://github.com/epappas/autojepa.git@555386f`
+(the post-bug-fix SHA), which pulls torch + lightning + transformers +
+stable-pretraining + webdataset + timm + transitive deps. Estimated
+container ready time: 5-10 minutes from container start.
+
+**Status**: in flight. Iter 0 deployment is Active, container booting.
+Per-iteration ETA on A100: ~10-30 min for 200-step canary + 6000-step
+pretrain at batch=128. Total 3-iter ETA: 30-90 min from campaign start
+(plus ~5 min container boot per iter unless container is reused).
 
 ### Why a 3-iter smoke before the full 20-iter campaign
 
