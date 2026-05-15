@@ -17,22 +17,23 @@ target:
     - python3
     - /app/train.py
   basilica:
-    image: pytorch/pytorch:2.4.1-cuda12.4-cudnn9-devel
+    # ADR-016: custom runtime image with torch + lightning +
+    # transformers + stable-pretraining + timm + git + autojepa core
+    # deps baked in. Built + pushed by examples/ijepa-cifar10/build_image.sh.
+    image: ghcr.io/epappas/autojepa-runtime:phase2
     gpu_count: 1
     gpu_models: ["A100", "H100", "L40S", "RTX-4090", "RTX-A6000"]
     memory: "32Gi"
     cpu: "8"
     storage: "/data"
     ttl_seconds: 4200
-    # 60-min container-ready timeout. setup_cmd pip-installs torch +
-    # lightning + torchvision + stable-pretraining + timm + autojepa
-    # core (~2-2.5 GB after deploy.py's slim-install change). 1800s
-    # (30 min) hit at exactly elapsed=1805s on iter 0 v2 (commit
-    # b467ca8) — Basilica's pip wheel-resolution step is the bottleneck.
-    # 3600s is the safety budget; a Phase-4 hardening task will bake a
-    # custom Docker image with all deps pre-installed to drop this
-    # back to <60s.
-    ready_timeout_s: 3600
+    # 600s ready timeout. With deps baked into the image, setup_cmd is
+    # just `pip install --no-deps autojepa @ git+...` + base64
+    # train.py/prepare.py inject + sanity import. Empirically <60s on a
+    # warm container; 600s gives 10x headroom for image-pull + cold
+    # network. Replaces the 3600s budget that covered the old cold-pip
+    # install.
+    ready_timeout_s: 600
     # NOTE: Use deploy.py rather than `autojepa run config.yaml` directly.
     # deploy.py reads train.py + prepare.py locally, base64-encodes them,
     # and injects them into /app/ via this setup_cmd. Pip-installing
@@ -58,7 +59,15 @@ policy:
     ema_decay_start: [0.99, 0.996, 0.999]
     probe_eval_every_n_steps: [500]
   llm_api_url: "https://llm.chutes.ai/v1"
-  llm_model: "deepseek-ai/DeepSeek-V3-0324"
+  # ADR-017: list ordered by preference; on 404 the policy advances to
+  # the next entry. Chutes silently renamed DeepSeek-V3-0324 to
+  # DeepSeek-V3-0324-TEE late in 2025; the original name now 404s.
+  # Keeping the legacy name in the list documents the rename and means
+  # a re-rename in either direction does not break the campaign.
+  llm_model:
+    - "deepseek-ai/DeepSeek-V3-0324-TEE"
+    - "deepseek-ai/DeepSeek-V3-0324"
+    - "deepseek-ai/DeepSeek-V3"
   llm_api_key_env: "CHUTES_API_KEY"
   llm_timeout_s: 60
   hybrid_param_explore_iters: 25

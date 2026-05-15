@@ -57,48 +57,20 @@ def _build_file_injection_cmd() -> str:
 
 
 def _build_setup_cmd(git_ref: str) -> str:
-    """Compose the container setup: pip install + file injection.
+    """Compose the container setup: pip install autojepa + file injection.
 
-    The Basilica base image (`pytorch/pytorch:...-cudnn9-devel`) does
-    NOT ship `git`. pip cannot install `autojepa @ git+https://...`
-    without it, so the first step apt-installs git. Verified live
-    by reading container logs via kubectl — every prior attempt
-    (commits 555386f / b467ca8 / 5ab0262 / 38d6251) crash-looped
-    here with: `ERROR: Cannot find command 'git'`.
+    Per ADR-016, the heavy GPU/ML stack (torch + lightning +
+    transformers + stable-pretraining + timm + autojepa core deps +
+    git) is baked into the custom image referenced by
+    config.yaml::target.basilica.image. So setup_cmd no longer
+    apt-installs git or pip-installs the heavy deps — it only
+    git-installs autojepa at the requested SHA (with --no-deps so
+    it does not refetch the baked stack), injects train.py +
+    prepare.py via base64, and sanity-imports.
 
-    Trimmed pip install: the [jepa] aggregator extra pulls webdataset
-    (~10 MB) which ijepa-cifar10 does not use (it's for trace-jepa
-    shards). transformers + datasets are HARD imports of stable-
-    pretraining v0.1.x so they stay in.
-
-    Setup_cmd order:
-    1. apt-install git (~30 s).
-    2. Heavy GPU/ML pip batch.
-    3. autojepa core deps pip batch.
-    4. autojepa from git WITHOUT extras.
-    5. Inject train.py + prepare.py via base64.
-    6. Sanity-import + nvidia-smi check.
+    Expected wall time on a warm container: <60s (pip-clones the repo
+    + pip-installs the small autojepa wheel).
     """
-    apt = "apt-get update -qq && apt-get install -y -qq git"
-    # transformers >=4.50 uses `from __future__ import annotations` in
-    # integrations/moe.py, which produces lazy-string type hints
-    # (`'torch.Tensor'`). torch 2.4 (pre-installed in the Basilica base
-    # image) calls infer_schema() on those hints during
-    # `torch.library.custom_op` registration and fails because its
-    # resolver does not handle string annotations. Pin transformers to
-    # 4.47.x — the same version autoresearch-rl/examples/basilica-grpo
-    # uses successfully on the same base image. Verified via kubectl
-    # logs of v6 (commit 954ea70).
-    deps = (
-        "pip install --no-cache-dir "
-        "torch>=2.4 lightning>=2.4 torchmetrics>=1.4 torchvision "
-        "'transformers>=4.47,<4.48' datasets "
-        "'stable-pretraining>=0.1.6,<0.2' timm"
-    )
-    autojepa_deps = (
-        "pip install --no-cache-dir 'numpy>=1.24' 'pydantic>=2.7' "
-        "'pyyaml>=6.0' 'typer>=0.12' 'basilica-sdk>=0.20'"
-    )
     autojepa = (
         f"pip install --no-cache-dir --no-deps "
         f"'autojepa @ git+https://github.com/epappas/autojepa.git@{git_ref}'"
@@ -109,10 +81,7 @@ def _build_setup_cmd(git_ref: str) -> str:
         "print('autojepa OK; spt', stable_pretraining.__version__, "
         "'cuda', torch.cuda.is_available(), 'devices', torch.cuda.device_count())\""
     )
-    return (
-        f"{apt} && {deps} && {autojepa_deps} && {autojepa} "
-        f"&& {file_inject} && {sanity}"
-    )
+    return f"{autojepa} && {file_inject} && {sanity}"
 
 
 def main() -> int:
