@@ -155,6 +155,160 @@ def _union(masks: list[torch.Tensor], grid_h: int, grid_w: int) -> torch.Tensor:
     return out
 
 
+@dataclass(frozen=True)
+class FutureBlockMask:
+    """Causal future-block masking over a 2D (time, channel) grid.
+
+    Used by Phase-3 trace-jepa: agent traces are sequences of structured
+    events ordered in time, and the task-relevant prediction is "given
+    the past, predict a contiguous block of future events". This is the
+    causal counterpart of `MultiBlockInfillMask` (which is non-causal /
+    infill), and is the only mask in the writeup §7.2 list that enforces
+    a *temporal* relationship between context and target.
+
+    Convention (matches `MultiBlockInfillMask.sample`):
+
+    - The first grid axis (`grid_h` from `.sample(grid_h, grid_w, ...)`)
+      is interpreted as the **time** axis.
+    - The second axis (`grid_w`) is the channel / feature axis.
+    - The grid is split along time at a sampled `context_end` index.
+      Context = all positions with `time < context_end`.
+      Targets = `n_targets` blocks sampled strictly inside
+                `time >= context_end + min_horizon_gap`.
+
+    Hyperparameters:
+
+    - `n_targets` — number of future blocks to predict.
+    - `context_fraction` — half-open uniform draw `(lo, hi)` for the
+      fraction of the time axis that becomes context. e.g. `(0.4, 0.6)`
+      means the context spans 40-60% of the timeline, future is the rest.
+    - `target_time_scale` — fraction of the *future* region one target
+      block spans on the time axis. e.g. `(0.05, 0.20)` means each
+      target block is 5-20% of the future window.
+    - `target_channel_scale` — fraction of the channel axis a target
+      block covers. Default `(1.0, 1.0)` (full-channel slab) matches
+      the trace-jepa case where every event has the same fields.
+    - `min_horizon_gap` — number of timesteps to skip between context
+      end and the earliest legal target start. Defaults to 0; set >0
+      to force the predictor to span an explicit prediction horizon.
+    - `max_attempts` — retries per target block when sampling collides
+      with another target.
+
+    Invariants the validator + tests enforce:
+
+    - For every target block t, every "True" position in t has a time
+      index strictly greater than every "True" position in context.
+      (the future-only invariant)
+    - Context and any target are disjoint.
+    - `sample()` is deterministic under a seeded `torch.Generator`.
+
+    Out-of-scope (v1):
+
+    - Overlap between distinct target blocks is permitted (matches
+      I-JEPA's multi-block convention; the model sees them as separate
+      prediction targets even when they share positions). A future
+      `disjoint_targets=True` switch can be added when a Phase-3 ablation
+      asks for it.
+    - Future-block sampling on a 1D sequence (no channel axis) is
+      modelled by `grid_w=1`.
+    """
+
+    n_targets: int = 4
+    context_fraction: tuple[float, float] = (0.4, 0.6)
+    target_time_scale: tuple[float, float] = (0.05, 0.20)
+    target_channel_scale: tuple[float, float] = (1.0, 1.0)
+    min_horizon_gap: int = 0
+    max_attempts: int = 20
+
+    def __post_init__(self) -> None:
+        _validate_scale("context_fraction", self.context_fraction)
+        _validate_scale("target_time_scale", self.target_time_scale)
+        _validate_scale("target_channel_scale", self.target_channel_scale)
+        if self.n_targets <= 0:
+            raise ValueError(f"n_targets must be positive; got {self.n_targets}")
+        if self.min_horizon_gap < 0:
+            raise ValueError(
+                f"min_horizon_gap must be non-negative; got {self.min_horizon_gap}"
+            )
+        if self.max_attempts <= 0:
+            raise ValueError(f"max_attempts must be positive; got {self.max_attempts}")
+
+    def sample(
+        self,
+        grid_h: int,
+        grid_w: int,
+        generator: torch.Generator | None = None,
+    ) -> MaskOutput:
+        if grid_h <= 0 or grid_w <= 0:
+            raise ValueError(f"grid dims must be positive; got ({grid_h}, {grid_w})")
+        if grid_h < 2:
+            raise ValueError(
+                f"FutureBlockMask requires grid_h>=2 to split context vs future; got {grid_h}"
+            )
+
+        ctx_lo, ctx_hi = self.context_fraction
+        ctx_frac = _uniform(ctx_lo, ctx_hi, generator)
+        # Reserve at least 1 timestep for context and (1 + min_horizon_gap)
+        # for the future region; clamp to satisfy both.
+        min_future = max(1, self.min_horizon_gap + 1)
+        max_ctx_end = grid_h - min_future
+        if max_ctx_end < 1:
+            raise RuntimeError(
+                f"grid_h={grid_h} too small for min_horizon_gap={self.min_horizon_gap}; "
+                f"need grid_h >= {self.min_horizon_gap + 2}"
+            )
+        context_end = max(1, min(max_ctx_end, int(round(ctx_frac * grid_h))))
+
+        future_start = context_end + self.min_horizon_gap
+        future_len = grid_h - future_start
+        if future_len <= 0:
+            raise RuntimeError(
+                f"no future region left after context_end={context_end} + "
+                f"min_horizon_gap={self.min_horizon_gap} on grid_h={grid_h}"
+            )
+
+        context = torch.zeros(grid_h, grid_w, dtype=torch.bool)
+        context[:context_end, :] = True
+
+        targets: list[torch.Tensor] = [
+            self._sample_future_block(
+                grid_h, grid_w, future_start, future_len, generator
+            )
+            for _ in range(self.n_targets)
+        ]
+        return MaskOutput(context=context.flatten(), targets=[t.flatten() for t in targets])
+
+    def _sample_future_block(
+        self,
+        grid_h: int,
+        grid_w: int,
+        future_start: int,
+        future_len: int,
+        generator: torch.Generator | None,
+    ) -> torch.Tensor:
+        ts_lo, ts_hi = self.target_time_scale
+        cs_lo, cs_hi = self.target_channel_scale
+
+        time_frac = _uniform(ts_lo, ts_hi, generator)
+        chan_frac = _uniform(cs_lo, cs_hi, generator)
+
+        h = max(1, min(future_len, int(round(time_frac * future_len))))
+        w = max(1, min(grid_w, int(round(chan_frac * grid_w))))
+        # Top is constrained to lie inside [future_start, grid_h - h].
+        top_lo = future_start
+        top_hi = grid_h - h + 1
+        if top_hi <= top_lo:
+            top = top_lo
+        else:
+            top = int(_uniform_int(top_lo, top_hi, generator))
+        left_hi = grid_w - w + 1
+        left = 0 if left_hi <= 0 else int(_uniform_int(0, left_hi, generator))
+
+        mask = torch.zeros(grid_h, grid_w, dtype=torch.bool)
+        mask[top : top + h, left : left + w] = True
+        return mask
+
+
 def _uniform(lo: float, hi: float, generator: torch.Generator | None) -> float:
     if lo == hi:
         return lo
