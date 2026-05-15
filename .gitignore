@@ -15,3 +15,7 @@ dist/
 UNKNOWN.egg-info/
 results.tsv
 uv.lock
+
+# Per-example downloaded datasets (CIFAR-10 ~170 MB; trace corpora 1M
+# sessions; etc). prepare.py regenerates from public sources.
+examples/*/data/
