@@ -158,6 +158,45 @@ Framework scope guard: **do NOT add the codebook to the core framework**
 concern, not a framework primitive — putting it in core would repeat the
 contrib-namespace mistake AutoJEPA explicitly rejected.
 
+### Phase-3 evaluation — external baselines (per Trace-JEPA-Evaluation belief)
+
+Per the `topic=Trace-JEPA-Evaluation` belief in Alexandria
+(asserted 2026-05-15), Trace-JEPA's Phase-3 evaluation must compare against
+three external baselines on the same probe set (synthetic InjecAgent
+overlays + AgentDojo gate):
+
+| Baseline | Family | Distillation |
+|---|---|---|
+| LogLLaMA (arxiv:2503.14849) | Discrete-AR autoregressive log model | external — see Alexandria `wiki/Log-Anomaly/arxivorg-abs-250314849.md` |
+| GraphIDS (arxiv:2509.16625) **or** SAFE (arxiv:2502.07119) | MAE-based SSL-IDS (non-JEPA) | [ssl-ids-landscape.md](docs/research/ssl-ids-landscape.md) |
+| MTS-JEPA (arxiv:2602.04643) | JEPA on time-series | [mts-jepa.md](docs/research/mts-jepa.md) |
+
+Concrete Phase-3 baseline pick from the SSL-IDS row is recorded in
+`examples/trace-jepa/config.yaml` when the example is written; SAFE is
+operationally simpler (tabular reshape + MAE), GraphIDS is the stronger
+reported result. See [ssl-ids-landscape.md](docs/research/ssl-ids-landscape.md)
+for the trade-off.
+
+Acceptance criteria:
+
+- **Hard gate** (unchanged from the gist): `probe AUROC > 0.7 at 5% FPR`
+  on synthetic InjecAgent overlays after 20 iters → otherwise abort.
+- **Soft gate** (new, per `topic=Trace-JEPA-Evaluation`): Trace-JEPA must
+  separate from each baseline by ≥ 0.05 AUROC on the same probe set, or
+  the JEPA inductive-bias bet is not earning its keep and the
+  architecture is reconsidered.
+
+Operational notes:
+
+- All three baselines must be evaluated on the **same probe set** as
+  Trace-JEPA — published numbers from the baseline papers are not
+  transferable to the InjecAgent / AgentDojo overlay protocol.
+- The soft gate is a model-of-model decision: failing it does not abort
+  the campaign, it triggers an architecture-reconsideration step
+  (writeup §12 escalation).
+- Phase-2 (ijepa-cifar10) is unaffected — these baselines are Phase-3
+  scope only.
+
 ---
 
 ## Phase 4 — Hardening for Basilica production (W5-6)
