@@ -154,7 +154,7 @@ class LLMDiffPolicy:
         *,
         mutable_file: str,
         api_url: str,
-        model: str,
+        model: str | list[str],
         api_key_env: str = "OPENAI_API_KEY",
         timeout_s: int = 60,
         metric: str = "val_bpb",

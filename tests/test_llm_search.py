@@ -2,14 +2,17 @@ from __future__ import annotations
 
 import json
 import random
+import urllib.error
 from unittest.mock import MagicMock, patch
 
 import pytest
 
 from autojepa.policy.llm_search import (
     LLMParamPolicy,
+    _call_chat_api_messages,
     _coerce_value,
     _format_prompt,
+    _normalise_models,
     _parse_response,
     _random_fallback,
 )
@@ -326,3 +329,149 @@ class TestLLMParamPolicyNext:
         # With 10 draws from a small space, we should see at least 2 distinct combos
         unique = {tuple(sorted(r.items())) for r in results}
         assert len(unique) >= 2
+
+
+# --- ADR-017: model-name fallback list ---
+
+
+class TestNormaliseModels:
+    def test_single_string(self) -> None:
+        assert _normalise_models("foo") == ["foo"]
+
+    def test_comma_separated_string(self) -> None:
+        assert _normalise_models("foo, bar,baz") == ["foo", "bar", "baz"]
+
+    def test_explicit_list(self) -> None:
+        assert _normalise_models(["a", "b", "c"]) == ["a", "b", "c"]
+
+    def test_drops_empties(self) -> None:
+        assert _normalise_models([" ", "a", ""]) == ["a"]
+        assert _normalise_models("a,, ,b") == ["a", "b"]
+
+    def test_empty_list_raises(self) -> None:
+        with pytest.raises(ValueError, match="empty list"):
+            _normalise_models([])
+
+    def test_empty_string_raises(self) -> None:
+        with pytest.raises(ValueError, match="empty list"):
+            _normalise_models("   ")
+
+
+class TestCallChatApiFallback:
+    """ADR-017: 404 on a model triggers fallback to the next list entry."""
+
+    def _make_404(self, body: bytes = b'{"error": "model not found"}') -> urllib.error.HTTPError:
+        from io import BytesIO
+        return urllib.error.HTTPError(
+            url="http://example/v1/chat/completions",
+            code=404,
+            msg="Not Found",
+            hdrs={},  # type: ignore[arg-type]
+            fp=BytesIO(body),
+        )
+
+    def _make_ok(self, content: str):
+        body = json.dumps({"choices": [{"message": {"content": content}}]}).encode()
+        resp = MagicMock()
+        resp.read = MagicMock(return_value=body)
+        resp.__enter__ = MagicMock(return_value=resp)
+        resp.__exit__ = MagicMock(return_value=False)
+        return resp
+
+    def test_falls_back_to_next_model_on_404(self) -> None:
+        """First model 404s, second succeeds — caller sees the second's response."""
+        models = ["primary-404", "secondary-ok"]
+        with patch(
+            "autojepa.policy.llm_search.urllib.request.urlopen",
+            side_effect=[self._make_404(), self._make_ok("hello world")],
+        ) as mock_urlopen:
+            result = _call_chat_api_messages(
+                "http://example/v1", models, "sk-test",
+                [{"role": "user", "content": "x"}], timeout=5,
+                max_retries=0,
+            )
+        assert result == "hello world"
+        # Two HTTP calls: first 404 on primary, second OK on secondary.
+        assert mock_urlopen.call_count == 2
+        first_payload = json.loads(mock_urlopen.call_args_list[0][0][0].data)
+        second_payload = json.loads(mock_urlopen.call_args_list[1][0][0].data)
+        assert first_payload["model"] == "primary-404"
+        assert second_payload["model"] == "secondary-ok"
+
+    def test_all_models_404_propagates(self) -> None:
+        """No remaining candidate -> last 404 re-raised so caller's seeded-random fires."""
+        models = ["first-404", "second-404"]
+        with patch(
+            "autojepa.policy.llm_search.urllib.request.urlopen",
+            side_effect=[self._make_404(), self._make_404()],
+        ):
+            with pytest.raises(urllib.error.HTTPError) as exc_info:
+                _call_chat_api_messages(
+                    "http://example/v1", models, "sk-test",
+                    [{"role": "user", "content": "x"}], timeout=5,
+                    max_retries=0,
+                )
+        assert exc_info.value.code == 404
+
+    def test_single_string_model_back_compat(self) -> None:
+        """The legacy single-string config form still works."""
+        with patch(
+            "autojepa.policy.llm_search.urllib.request.urlopen",
+            return_value=self._make_ok("ok"),
+        ) as mock_urlopen:
+            result = _call_chat_api_messages(
+                "http://example/v1", "only-one", "sk-test",
+                [{"role": "user", "content": "x"}], timeout=5,
+                max_retries=0,
+            )
+        assert result == "ok"
+        payload = json.loads(mock_urlopen.call_args[0][0].data)
+        assert payload["model"] == "only-one"
+
+    def test_500_does_not_trigger_fallback(self) -> None:
+        """5xx errors should retry (or propagate) on the SAME model, not advance."""
+        from io import BytesIO
+
+        models = ["primary", "secondary"]
+        err500 = urllib.error.HTTPError(
+            url="http://example/v1/chat/completions",
+            code=500, msg="Server Error", hdrs={},  # type: ignore[arg-type]
+            fp=BytesIO(b""),
+        )
+        with patch(
+            "autojepa.policy.llm_search.urllib.request.urlopen",
+            side_effect=err500,
+        ) as mock_urlopen:
+            with pytest.raises(urllib.error.HTTPError) as exc_info:
+                _call_chat_api_messages(
+                    "http://example/v1", models, "sk-test",
+                    [{"role": "user", "content": "x"}], timeout=5,
+                    max_retries=0,
+                )
+        assert exc_info.value.code == 500
+        # Exactly one call — no fallback to "secondary".
+        assert mock_urlopen.call_count == 1
+
+
+class TestPolicyAcceptsModelList:
+    """LLMParamPolicy must accept the list form end-to-end."""
+
+    def test_init_accepts_list(self) -> None:
+        policy = LLMParamPolicy(
+            SPACE,
+            api_url="http://x/v1",
+            model=["m1", "m2"],
+            api_key_env="TEST_LLM_KEY",
+            seed=1,
+        )
+        assert policy._model == ["m1", "m2"]
+
+    def test_init_accepts_string(self) -> None:
+        policy = LLMParamPolicy(
+            SPACE,
+            api_url="http://x/v1",
+            model="single",
+            api_key_env="TEST_LLM_KEY",
+            seed=1,
+        )
+        assert policy._model == "single"

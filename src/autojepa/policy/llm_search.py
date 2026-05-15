@@ -110,9 +110,32 @@ def _format_prompt(
     return "\n".join(lines)
 
 
+def _normalise_models(model: str | list[str]) -> list[str]:
+    """Coerce the configured llm_model field to an ordered fallback list.
+
+    Per ADR-017, the field can be:
+      - a single string ("deepseek-ai/DeepSeek-V3-0324-TEE")
+      - a comma-separated string ("foo, bar, baz")
+      - an explicit list (["foo", "bar", "baz"])
+
+    Returns a non-empty list in attempt order with empties dropped.
+    Raises ValueError if no usable name remains.
+    """
+    if isinstance(model, str):
+        candidates = [m.strip() for m in model.split(",")]
+    elif isinstance(model, list):
+        candidates = [str(m).strip() for m in model]
+    else:
+        raise ValueError(f"llm_model must be str or list[str], got {type(model).__name__}")
+    candidates = [m for m in candidates if m]
+    if not candidates:
+        raise ValueError("llm_model resolves to an empty list of model names")
+    return candidates
+
+
 def _call_chat_api_messages(
     url: str,
-    model: str,
+    model: str | list[str],
     api_key: str,
     messages: list[dict],
     timeout: int,
@@ -120,31 +143,61 @@ def _call_chat_api_messages(
     max_retries: int = 5,
     temperature: float = 1.0,
 ) -> str:
+    """Call the OpenAI-compatible chat API, with model-name fallback.
+
+    Per ADR-017, `model` may be a list of names; we try them in order
+    and advance to the next one on a 404 (model does not exist on
+    the provider). 4xx errors other than 404, 5xx, and network
+    errors propagate normally so the caller's retry / fallback path
+    fires.
+    """
     from autojepa.telemetry.timeline import global_span
 
+    candidates = _normalise_models(model)
     endpoint = url.rstrip("/") + "/chat/completions"
-    payload = {
-        "model": model,
-        "messages": messages,
-        "stream": False,
-        "temperature": temperature,
-        "max_tokens": max_tokens,
-    }
-    data = json.dumps(payload).encode("utf-8")
-    span_args = {
-        "model": model,
-        "msg_count": len(messages),
-        "max_tokens": max_tokens,
-        "temperature": temperature,
-    }
-    span_cm = global_span("llm.chat_completion", category="llm", args=span_args)
-    span_cm_args = span_cm.__enter__()
-    try:
-        return _do_request(
-            endpoint, data, api_key, timeout, max_retries, span_cm_args,
-        )
-    finally:
-        span_cm.__exit__(None, None, None)
+    last_404: urllib.error.HTTPError | None = None
+    for idx, name in enumerate(candidates):
+        payload = {
+            "model": name,
+            "messages": messages,
+            "stream": False,
+            "temperature": temperature,
+            "max_tokens": max_tokens,
+        }
+        data = json.dumps(payload).encode("utf-8")
+        span_args = {
+            "model": name,
+            "model_attempt": idx,
+            "model_total": len(candidates),
+            "msg_count": len(messages),
+            "max_tokens": max_tokens,
+            "temperature": temperature,
+        }
+        span_cm = global_span("llm.chat_completion", category="llm", args=span_args)
+        span_cm_args = span_cm.__enter__()
+        try:
+            try:
+                return _do_request(
+                    endpoint, data, api_key, timeout, max_retries, span_cm_args,
+                )
+            except urllib.error.HTTPError as exc:
+                if exc.code == 404 and idx + 1 < len(candidates):
+                    last_404 = exc
+                    next_name = candidates[idx + 1]
+                    logger.warning(
+                        "LLM model %r returned 404; falling back to %r",
+                        name, next_name,
+                    )
+                    span_cm_args["status"] = "http_404_fallback"
+                    continue
+                raise
+        finally:
+            span_cm.__exit__(None, None, None)
+    # Exhausted the list with the last attempt being a 404. Re-raise so
+    # the caller's existing fallback (seeded random) fires.
+    if last_404 is not None:
+        raise last_404
+    raise RuntimeError("model fallback list exhausted without a definitive error")
 
 
 def _do_request(
@@ -353,7 +406,7 @@ class LLMParamPolicy:
         space: dict[str, list[Any]],
         *,
         api_url: str,
-        model: str,
+        model: str | list[str],
         api_key_env: str = "OPENAI_API_KEY",
         timeout_s: int = 30,
         metric: str = "val_bpb",

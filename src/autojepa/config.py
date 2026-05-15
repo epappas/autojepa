@@ -68,7 +68,12 @@ class PolicyConfig(BaseModel):
     )
     seed: int = 7
     llm_api_url: str | None = None
-    llm_model: str | None = None
+    # Per ADR-017, llm_model accepts a list (try-each-on-404) or a
+    # single string (back-compat). YAML can express either:
+    #   llm_model: "deepseek-ai/DeepSeek-V3-0324-TEE"
+    #   llm_model: ["deepseek-ai/DeepSeek-V3-0324-TEE", "deepseek-ai/DeepSeek-V3-0324"]
+    # A comma-separated string is also accepted and split on first use.
+    llm_model: str | list[str] | None = None
     llm_api_key_env: str = "OPENAI_API_KEY"
     llm_timeout_s: int = 30
     # Diff mode fields
@@ -92,6 +97,15 @@ class PolicyConfig(BaseModel):
             if not self.llm_model:
                 raise ValueError(
                     f"llm_model is required when policy type is '{self.type}'"
+                )
+            # Empty list is falsy already; defensive: a list of empty
+            # strings is still meaningless and should fail.
+            if isinstance(self.llm_model, list) and not any(
+                isinstance(m, str) and m.strip() for m in self.llm_model
+            ):
+                raise ValueError(
+                    f"llm_model list must contain at least one non-empty model name "
+                    f"when policy type is '{self.type}'"
                 )
         if self.type in ("llm_diff", "hybrid"):
             if not self.mutable_file:
