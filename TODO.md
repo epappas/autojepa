@@ -79,15 +79,30 @@
 > improvements against a deliberately suboptimal baseline, the entire framework
 > approach is dead.
 
-- [ ] Standard I-JEPA on CIFAR-10, 4M-param ViT, **deliberately suboptimal baseline** (small predictor, no VICReg) so the LLM has headroom
-- [ ] `prepare.py`: CIFAR-10 download + linear probe pipeline + canary
-- [ ] `train.py`: I-JEPA loop with `emit_progress(step, step_target, metrics={"probe_auroc": ...})` at checkpoint intervals
-- [ ] `program.md`: JEPA failure modes encoded; required calls listed
-- [ ] `config.yaml`: Basilica target (single A100), 20-iter hybrid policy
-- [ ] Run 20-iter campaign on Basilica
-- [ ] Reserve no-forecaster control group for first 50 iters (forecaster recalibration burn-in)
-- [ ] **Validate ≥1 hybrid-mode diff produced a measurable, retained improvement on probe AUROC**
-- [ ] **Deliverable**: reproducible I-JEPA-CIFAR campaign with hybrid-policy improvement, OR documented framework kill
+### Code complete (Phase 2 batch 1)
+
+- [x] `examples/ijepa-cifar10/prepare.py` (frozen): CIFAR-10 download + probe-eval split + canary subset
+- [x] `examples/ijepa-cifar10/train.py` (mutable): I-JEPA loop wrapping `stable_pretraining.methods.IJEPA` per ADR-003. Deliberately suboptimal baseline per ADR-014 (predictor_depth=2, predictor_embed_dim=128, num_targets=2, plain L2). Calls `emit_progress(metrics={"probe_auroc": ...})` and `assert_no_grad_on_target` at the AST-validator-required boundaries
+- [x] `examples/ijepa-cifar10/program.md`: full task spec encoding the §6.4 hard rules, hyperparameter guidance, code-diff guidance, and decision gate
+- [x] `examples/ijepa-cifar10/config.yaml`: Basilica target (A100/H100/L40S/RTX-4090/RTX-A6000), 20-iter hybrid policy, recalibrated SSL forecaster defaults (intra_iteration_cancel: enabled, min_steps=2000, poll_interval_s=30, min_reports_before_decide=10)
+- [x] `examples/ijepa-cifar10/{README.md,run.sh,requirements.txt}` for orchestration
+- [x] `tests/test_examples_smoke.py` re-points TIER2_VALIDATE_ONLY at this example
+- [x] ADR-014 documents the deliberately-suboptimal-baseline decision
+
+### Validated locally (Phase 2 batch 2 — current state)
+
+- [x] `BASILICA_API_TOKEN=stub CHUTES_API_KEY=stub uv run autojepa validate examples/ijepa-cifar10/config.yaml` -> `OK`
+- [x] prepare.py and train.py both import cleanly under `[jepa]` extras
+- [x] Full test suite: 556 passed, 6 skipped (no regressions; the new Tier-2 validate test for ijepa-cifar10 passes)
+- [ ] CPU/GPU smoke (`./run.sh smoke`) executes 50 steps end-to-end without errors — needs runtime validation
+- [ ] `./run.sh prepare` downloads CIFAR-10 and writes `data/*.pt` — needs runtime validation
+
+### To execute on Basilica (Phase 2 batch 3 — user-driven)
+
+- [ ] Reserve no-forecaster control group for first 50 iters (per writeup §12.2 / ADR-013)
+- [ ] Run 20-iter hybrid campaign on Basilica with budget ~$30-100 of A100 time
+- [ ] **Decision gate**: ≥1 hybrid-mode diff produces a measurable retained improvement; `phase2_falsifier` gate (probe_auroc > 0.40) reports pass
+- [ ] **Deliverable**: reproducible I-JEPA-CIFAR campaign with hybrid-policy improvement, OR documented framework kill (writeup §12.1 escalation)
 
 ---
 

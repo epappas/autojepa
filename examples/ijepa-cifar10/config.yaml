@@ -1,0 +1,78 @@
+name: ijepa-cifar10
+
+program_path: examples/ijepa-cifar10/program.md
+
+objective:
+  metric: probe_auroc
+  direction: max
+
+target:
+  type: basilica
+  workdir: examples/ijepa-cifar10
+  timeout_s: 3600
+  prepare_cmd:
+    - python3
+    - prepare.py
+  train_cmd:
+    - python3
+    - train.py
+  basilica:
+    image: pytorch/pytorch:2.4.1-cuda12.4-cudnn9-devel
+    gpu_count: 1
+    gpu_models: ["A100", "H100", "L40S", "RTX-4090", "RTX-A6000"]
+    memory: "32Gi"
+    cpu: "8"
+    storage: "/data"
+    ttl_seconds: 4200
+    setup_cmd: |
+      pip install --no-cache-dir 'autojepa[jepa] @ git+https://github.com/epappas/autojepa.git@HEAD' && \
+      python -c "from autojepa import cli; print('autojepa importable')"
+
+policy:
+  type: hybrid
+  mutable_file: examples/ijepa-cifar10/train.py
+  frozen_file: examples/ijepa-cifar10/prepare.py
+  program_file: examples/ijepa-cifar10/program.md
+  params:
+    learning_rate: [0.00005, 0.0001, 0.0002, 0.0005]
+    weight_decay: [0.0, 0.05, 0.1]
+    batch_size: [64, 128, 256]
+    max_steps: [2000, 4000, 6000]
+    predictor_depth: [2, 3, 4, 6]
+    predictor_embed_dim: [128, 192]
+    num_targets: [2, 3, 4]
+    ema_decay_start: [0.99, 0.996, 0.999]
+    probe_eval_every_n_steps: [500]
+  llm_api_url: "https://llm.chutes.ai/v1"
+  llm_model: "deepseek-ai/DeepSeek-V3-0324"
+  llm_api_key_env: "CHUTES_API_KEY"
+  llm_timeout_s: 60
+  hybrid_param_explore_iters: 25
+  hybrid_stall_threshold: 5
+  hybrid_diff_failure_limit: 5
+
+controller:
+  max_iterations: 20
+  max_wall_time_s: 86400
+  no_improve_limit: 8
+  failure_rate_limit: 0.7
+  failure_window: 6
+  checkpoint_path: artifacts/ijepa-cifar10/checkpoint.json
+  intra_iteration_cancel:
+    enabled: true
+    min_steps: 2000
+    poll_interval_s: 30.0
+    min_reports_before_decide: 10
+
+comparability:
+  budget_mode: parallel_wallclock
+  expected_budget_s: 86400
+  expected_hardware_fingerprint: null
+  strict: false
+
+telemetry:
+  trace_path: traces/ijepa-cifar10/events.jsonl
+  ledger_path: artifacts/ijepa-cifar10/results.tsv
+  artifacts_dir: artifacts/ijepa-cifar10/runs
+  versions_dir: artifacts/ijepa-cifar10/versions
+  model_output_dir: artifacts/ijepa-cifar10/models

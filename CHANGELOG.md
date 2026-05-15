@@ -13,6 +13,62 @@ research codebase, not a published library.
 
 (Future work goes here.)
 
+## [2026-05-15] — Phase 2 batch 1: examples/ijepa-cifar10 — code complete
+
+The Phase-2 falsifier example. Wraps stable-pretraining's IJEPA
+Lightning module per ADR-003. Ships a deliberately suboptimal
+baseline per ADR-014 so the LLM diff policy has clear headroom to
+find improvements over a 20-iteration hybrid campaign.
+
+### Added
+
+- `examples/ijepa-cifar10/prepare.py` — frozen CIFAR-10 download +
+  probe-eval split (5k/5k) + 1k canary subset
+- `examples/ijepa-cifar10/train.py` — mutable I-JEPA training loop
+  using `stable_pretraining.methods.IJEPA` with weakened defaults
+  (predictor_depth=2, predictor_embed_dim=128, num_targets=2, plain
+  L2). Calls `emit_progress(metrics={"probe_auroc": ...})` and
+  `assert_no_grad_on_target` at AST-validator-required boundaries
+- `examples/ijepa-cifar10/program.md` — full task spec encoding §6.4
+  hard rules, hyperparameter ranges, code-diff guidance, and the
+  `phase2_falsifier` decision gate
+- `examples/ijepa-cifar10/config.yaml` — Basilica target, 20-iter
+  hybrid policy with widened JEPA defaults, recalibrated SSL
+  forecaster
+- `examples/ijepa-cifar10/{README.md,run.sh,requirements.txt}` —
+  orchestration
+- `docs/adr/014-deliberately-suboptimal-baseline.md` — formalises
+  the §12.1 mitigation as a pinned design decision
+
+### Changed
+
+- `tests/test_examples_smoke.py` — `TIER2_VALIDATE_ONLY` re-pointed
+  at `examples/ijepa-cifar10` (the first AutoJEPA-native example to
+  ride the validate-only smoke gate)
+
+### Verified evidence
+
+```
+$ BASILICA_API_TOKEN=stub CHUTES_API_KEY=stub uv run autojepa validate examples/ijepa-cifar10/config.yaml
+OK
+$ uv run pytest tests/test_examples_smoke.py -v
+1 passed, 1 skipped in 4.81s
+$ uv run pytest -q --ignore=tests/eval/test_real_llm.py
+556 passed, 6 skipped in 43.43s
+$ uv run ruff check src/ tests/ examples/  -> All checks passed!
+$ uv run mypy src/                          -> Success: no issues found in 68 source files
+```
+
+### Not yet done
+
+- CPU/GPU smoke run (`./run.sh smoke`) — runtime validation pending
+- 20-iter Basilica campaign — user-driven (requires real
+  `BASILICA_API_TOKEN`, `CHUTES_API_KEY`, and ~$30-100 of A100 time)
+- Phase-2 kill criterion outcome — depends on the Basilica campaign
+
+This commit lands the Phase-2 deliverable code; the framework's
+falsifier verdict remains pending the actual campaign.
+
 ## [2026-05-15] — Phase 1 complete: JEPA primitives library
 
 Six commits adding the JEPA-specific primitives the writeup §7 calls

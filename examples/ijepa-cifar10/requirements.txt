@@ -1,0 +1,2 @@
+autojepa[jepa]
+torchvision>=0.19

@@ -139,10 +139,13 @@ def test_llm_diff_example_produces_real_best_value(
 # Examples that need real GPU / heavy ML deps to actually run, but whose
 # config + target-construction path we can still smoke-test via 'validate'.
 #
-# Empty in Phase-1 (see TIER1_FULL_RUN comment + ADR-006). Phase-3
-# trace-jepa is a candidate Tier-2 entry until we have a way to mock
-# its data pipeline cheaply.
-TIER2_VALIDATE_ONLY: list[str] = []
+# `examples/ijepa-cifar10` lands in Phase-2 — it requires an A100 to
+# train but `autojepa validate` exits 0 with stub credentials, so it
+# is a valid Tier-2 entry. Phase-3 `examples/trace-jepa` will be added
+# here when it lands.
+TIER2_VALIDATE_ONLY: list[str] = [
+    "examples/ijepa-cifar10",
+]
 
 
 @pytest.mark.parametrize("example_dir", TIER2_VALIDATE_ONLY)
