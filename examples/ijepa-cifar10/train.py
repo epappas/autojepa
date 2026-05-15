@@ -93,6 +93,13 @@ def main() -> int:
 
     pl.seed_everything(int(_hp("seed", 0)), workers=True)
 
+    # Device selection. Basilica nodes have GPU; local CPU is fallback.
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    print(
+        f"device={device} cuda_devices={torch.cuda.device_count() if torch.cuda.is_available() else 0}",
+        flush=True,
+    )
+
     train_x = torch.load(DATA_DIR / "cifar10_train.pt")  # (50000, 3, 32, 32) uint8
     # train_y not consumed during pretraining (SSL); the linear-probe
     # eval reads its own labels from probe_eval.pt.
@@ -104,7 +111,7 @@ def main() -> int:
         x = x_uint8.float() / 255.0
         return TF.resize(x, [224, 224], antialias=True)
 
-    print(f"resizing {len(train_x)} train images to 224x224 ...")
+    print(f"resizing {len(train_x)} train images to 224x224 ...", flush=True)
     train_x_224 = _to_224(train_x)
     canary_x_224 = _to_224(canary["x"])
 
@@ -116,18 +123,18 @@ def main() -> int:
         ema_decay_start=EMA_DECAY_START,
         ema_decay_end=EMA_DECAY_END,
         pretrained=False,
-    )
+    ).to(device)
     assert_no_grad_on_target(model.encoder)
 
     # ---------- canary: drive L_predict below threshold on 1k samples
-    print(f"canary: overfit {len(canary_x_224)} samples ...")
+    print(f"canary: overfit {len(canary_x_224)} samples on {device} ...", flush=True)
     canary_loader = torch.utils.data.DataLoader(
         torch.utils.data.TensorDataset(canary_x_224),
         batch_size=BATCH_SIZE,
         shuffle=True,
     )
     canary_loss = _run_canary(
-        model, canary_loader, max_steps=200, lr=LEARNING_RATE
+        model, canary_loader, max_steps=200, lr=LEARNING_RATE, device=device
     )
     emit_progress(
         step=0,
@@ -163,6 +170,7 @@ def main() -> int:
             if step >= MAX_STEPS:
                 break
             (images,) = batch
+            images = images.to(device, non_blocking=True)
             optimizer.zero_grad()
             output = model(images)
             output.loss.backward()
@@ -171,7 +179,7 @@ def main() -> int:
             step += 1
 
             if step % PROBE_EVAL_EVERY_N_STEPS == 0 or step == MAX_STEPS:
-                probe_auroc = _run_linear_probe(model, DATA_DIR)
+                probe_auroc = _run_linear_probe(model, DATA_DIR, device=device)
                 best_probe_auroc = max(best_probe_auroc, probe_auroc)
                 emit_progress(
                     step=step,
@@ -181,12 +189,13 @@ def main() -> int:
                         "loss": float(output.loss.item()),
                     },
                 )
+                print(f"step={step} probe_auroc={probe_auroc:.4f}", flush=True)
 
-    print(f"final probe_auroc={best_probe_auroc:.4f} after {step} steps")
+    print(f"final probe_auroc={best_probe_auroc:.4f} after {step} steps", flush=True)
     return 0
 
 
-def _run_canary(model, loader, max_steps: int, lr: float) -> float:
+def _run_canary(model, loader, max_steps: int, lr: float, device) -> float:
     import torch
 
     optimizer = torch.optim.AdamW(
@@ -199,6 +208,7 @@ def _run_canary(model, loader, max_steps: int, lr: float) -> float:
             if step >= max_steps:
                 break
             (images,) = batch
+            images = images.to(device, non_blocking=True)
             optimizer.zero_grad()
             out = model(images)
             out.loss.backward()
@@ -208,11 +218,11 @@ def _run_canary(model, loader, max_steps: int, lr: float) -> float:
     return min(losses) if losses else float("inf")
 
 
-def _run_linear_probe(model, data_dir: Path) -> float:
+def _run_linear_probe(model, data_dir: Path, device) -> float:
     """Frozen-features linear probe on the eval split.
 
-    Uses scikit-learn-style closed-form fit for speed; matches the
-    methodology in I-JEPA paper §3 linear-eval protocol.
+    Uses a 50-step linear classifier fit on extracted features; matches
+    the methodology in I-JEPA paper §3 linear-eval protocol but cheaper.
     """
     import torch
     import torchvision.transforms.functional as TF
@@ -220,16 +230,16 @@ def _run_linear_probe(model, data_dir: Path) -> float:
     probe_data = torch.load(data_dir / "probe_eval.pt")
     x_train = TF.resize(probe_data["x_train"].float() / 255.0, [224, 224], antialias=True)
     x_test = TF.resize(probe_data["x_test"].float() / 255.0, [224, 224], antialias=True)
-    y_train = probe_data["y_train"]
-    y_test = probe_data["y_test"]
+    y_train = probe_data["y_train"].to(device)
+    y_test = probe_data["y_test"].to(device)
 
     model.eval()
     with torch.no_grad():
-        feats_train = _extract_features(model, x_train, batch_size=128)
-        feats_test = _extract_features(model, x_test, batch_size=128)
+        feats_train = _extract_features(model, x_train, batch_size=128, device=device)
+        feats_test = _extract_features(model, x_test, batch_size=128, device=device)
     model.train()
 
-    classifier = torch.nn.Linear(feats_train.shape[1], 10)
+    classifier = torch.nn.Linear(feats_train.shape[1], 10).to(device)
     optimizer = torch.optim.AdamW(classifier.parameters(), lr=1e-3)
     criterion = torch.nn.CrossEntropyLoss()
     for _ in range(50):
@@ -246,7 +256,7 @@ def _run_linear_probe(model, data_dir: Path) -> float:
     return acc
 
 
-def _extract_features(model, x, batch_size: int):
+def _extract_features(model, x, batch_size: int, device):
     """Extract per-image embeddings from the EMA target encoder.
 
     The stable-pretraining MaskedEncoder returns a `MaskedEncoderOutput`
@@ -258,7 +268,7 @@ def _extract_features(model, x, batch_size: int):
 
     parts: list[torch.Tensor] = []
     for i in range(0, len(x), batch_size):
-        batch = x[i : i + batch_size]
+        batch = x[i : i + batch_size].to(device, non_blocking=True)
         with torch.no_grad():
             out = model.encoder.forward_teacher(batch)
         feats = out.encoded if hasattr(out, "encoded") else out
