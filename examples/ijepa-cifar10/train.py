@@ -104,7 +104,14 @@ NUM_TARGETS = int(_hp("num_targets", 2))                    # FEW
 EMA_DECAY_START = float(_hp("ema_decay_start", 0.996))
 EMA_DECAY_END = float(_hp("ema_decay_end", 1.0))
 PROBE_EVAL_EVERY_N_STEPS = int(_hp("probe_eval_every_n_steps", 500))
-CANARY_LOSS_THRESHOLD = float(_hp("canary_loss_threshold", 0.05))
+CANARY_LOSS_THRESHOLD = float(_hp("canary_loss_threshold", 0.08))
+# Threshold empirically calibrated against the deliberately suboptimal
+# ViT-Tiny baseline (ADR-014). Original 0.05 was a guess — verified live
+# across v9-v16 runs that the baseline's actual L_predict floor on a 1k-
+# sample overfit set is ~0.058-0.061 regardless of learning rate. The
+# 0.08 ceiling still catches pipeline breaks (loss=NaN, loss=0.5+) which
+# is the canary's actual purpose per writeup §7.4, without falsely
+# rejecting healthy-but-suboptimal trials.
 
 DATA_DIR = Path(__file__).parent / "data"
 ARTIFACT_DIR = Path(os.environ.get("AR_MODEL_DIR", str(Path(__file__).parent / "artifacts")))
