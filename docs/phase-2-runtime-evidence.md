@@ -1,5 +1,26 @@
 # Phase 2 — Runtime Evidence
 
+> **2026-05-16 — Unblocker chain verified end-to-end** (commit `a120b68`,
+> v18 single-iter grid-policy campaign):
+>
+> ```json
+> {"iterations": 1, "best_value": 0.24399998784065247,
+>  "best_score": -0.24399998784065247}
+> ```
+>
+> Iter outcome: `status=ok, decision=keep, probe_auroc=0.244,
+> canary_loss=0.0589, elapsed=369s`. Versioned model artifact at
+> `artifacts/ijepa-cifar10/versions/v0000/`. Closed via
+> `outcome.json` detection (ADR-015), not the 3600s timeout fallback.
+> All five unblocker fixes (ADR-015 + ADR-016 + ADR-018 + ADR-019 +
+> canary calibration 0.05→0.08) are required and proven sufficient.
+>
+> **Task #15 (Phase-2 unblocker) is closed.** Task #8 (Phase-2
+> falsifier) remains in_progress: still requires a working LLM
+> endpoint for the 20-iter hybrid campaign. Chutes is silently 404
+> on all `DeepSeek-V3*` model URLs as of 2026-05-15.
+
+
 > Companion to `docs/phase-0-baseline.md` and `examples/ijepa-cifar10/README.md`.
 > Captures the actual runtime validation of the Phase-2 example beyond
 > "code compiles and tests pass". Per NEVER LIE, every claim here is
