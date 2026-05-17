@@ -163,7 +163,14 @@ def test_example_validates_cleanly_with_stub_credentials(
     Stub credentials are sufficient because config_validate only checks
     env-var presence, not validity. Real auth happens at run-time.
     """
+    # Cover all currently-used LLM env vars across examples. Each
+    # example's policy.llm_api_key_env points to ONE of these; stubbing
+    # them all keeps the smoke test resilient to example migrations
+    # (e.g., 2026-05-17 ijepa-cifar10 moved from KIMI to OpenRouter).
     monkeypatch.setenv("CHUTES_API_KEY", "stub")
+    monkeypatch.setenv("KIMI_API_KEY", "stub")
+    monkeypatch.setenv("OPENROUTER_API_KEY", "stub")
+    monkeypatch.setenv("OPENAI_API_KEY", "stub")
     monkeypatch.setenv("BASILICA_API_TOKEN", "stub")
 
     sandbox_root, config_path = _isolate(example_dir, tmp_path)

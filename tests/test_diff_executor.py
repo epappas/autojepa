@@ -79,6 +79,32 @@ def test_apply_diff_in_memory_preserves_other_lines():
     assert "EPOCHS = 10" in modified
 
 
+def test_apply_diff_in_memory_tolerates_offset_hunk_header():
+    """LLM-generated diffs routinely get hunk line numbers wrong while
+    keeping the context lines accurate. The patch backend with fuzz
+    must absorb the offset rather than reject the whole diff (as
+    `git apply` did in v25 — see docs/phase-2-fix-diary.md 2026-05-17
+    "the diff path was never wired" entry).
+    """
+    # Same edit as VALID_DIFF, but the hunk header claims to start at
+    # line 50 even though the file is only 3 lines long. git apply
+    # would reject this as "corrupt patch"; patch --fuzz=5 finds the
+    # context and applies the edit at the correct location.
+    offset_diff = """\
+--- a/train.py
++++ b/train.py
+@@ -50,3 +50,3 @@
+ import torch
+-LEARNING_RATE = 0.0026
++LEARNING_RATE = 0.0020
+ EPOCHS = 10
+"""
+    modified = _apply_diff_in_memory(ORIGINAL_SOURCE, offset_diff, "train.py")
+    assert modified is not None, "patch --fuzz should tolerate wrong line numbers"
+    assert "LEARNING_RATE = 0.0020" in modified
+    assert "LEARNING_RATE = 0.0026" not in modified
+
+
 # --- _persist_diff ---
 
 

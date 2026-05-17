@@ -30,34 +30,50 @@ _GIT_ENV = {
 
 
 def _apply_diff_in_memory(source: str, diff: str, filename: str) -> str | None:
-    """Apply a unified diff to source in an ephemeral git repo.
+    """Apply a unified diff to source in a temp directory, return patched content.
+
+    Uses GNU `patch -p1 --fuzz=5` rather than `git apply` because LLM-
+    generated diffs routinely get hunk line numbers off by a few lines
+    while keeping the surrounding context lines accurate. git apply is
+    strict and rejects the whole patch when line numbers don't match
+    exactly; `patch` with fuzz tolerates offset and slight context
+    drift, which is the realistic mode for LLM diff proposers. Live
+    evidence: v25 iter=5,6,7,8,9 all had real Claude-authored diffs
+    (rationale=llm-diff, ~1500 chars, semantically correct VICReg
+    swap) that `git apply` rejected as "corrupt patch" because Claude
+    miscounted hunk header line counts. The SAME diffs apply cleanly
+    with `patch -p1 --fuzz=5`. See ADR-021 + docs/phase-2-fix-diary.md.
 
     Returns the modified source string, or None on failure.
     """
     with tempfile.TemporaryDirectory(prefix="ar-diff-") as tmpdir:
-        src_path = Path(tmpdir) / filename
+        # patch -p1 strips one path prefix, so place the file under a
+        # subdir to match the diff's "a/<filename>" convention.
+        src_path = Path(tmpdir) / "a" / filename
+        src_path.parent.mkdir(parents=True, exist_ok=True)
         src_path.write_text(source, encoding="utf-8")
 
-        env = {**os.environ, **_GIT_ENV}
-        git = ["git", "-C", tmpdir]
-
-        init = subprocess.run(git + ["init"], capture_output=True, check=False, env=env)
-        if init.returncode != 0:
-            logger.warning("git init failed: %s", init.stderr.strip())
-            return None
-
-        subprocess.run(git + ["add", filename], capture_output=True, check=False, env=env)
-        subprocess.run(
-            git + ["commit", "-m", "base"],
-            capture_output=True, check=False, env=env,
+        result = subprocess.run(
+            [
+                "patch",
+                "-p1",
+                "--fuzz=5",
+                "--no-backup-if-mismatch",
+                "--silent",
+                filename,
+            ],
+            input=diff,
+            text=True,
+            capture_output=True,
+            cwd=str(src_path.parent),
+            timeout=10,
         )
-
-        apply = subprocess.run(
-            git + ["apply", "-"],
-            input=diff, text=True, capture_output=True,
-        )
-        if apply.returncode != 0:
-            logger.warning("git apply failed: %s", apply.stderr.strip())
+        if result.returncode != 0:
+            logger.warning(
+                "patch failed (rc=%d): %s",
+                result.returncode,
+                (result.stderr or result.stdout).strip()[:400],
+            )
             return None
 
         return src_path.read_text(encoding="utf-8")

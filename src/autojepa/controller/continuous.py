@@ -120,12 +120,21 @@ def _make_diff_state_builder(
 
 def _diff_extractor(proposal: Proposal) -> dict:
     assert isinstance(proposal, DiffProposal)
-    return {"diff": proposal.diff[:200]}
+    # No truncation. The full diff goes through to the executor, which
+    # applies it; the trace stores it for reproducibility. The old
+    # [:200] truncation was a cosmetic hack that made every diff
+    # appear mid-word in events.jsonl and confused multiple
+    # post-mortems (cf. docs/phase-2-fix-diary.md 2026-05-17).
+    return {"diff": proposal.diff, "diff_len": len(proposal.diff)}
 
 
 def _hybrid_extractor(proposal: Proposal) -> dict:
     if isinstance(proposal, DiffProposal):
-        return {"diff": proposal.diff[:200], "_type": "diff"}
+        return {
+            "diff": proposal.diff,
+            "diff_len": len(proposal.diff),
+            "_type": "diff",
+        }
     assert isinstance(proposal, ParamProposal)
     return {**proposal.params, "_type": "param"}
 
