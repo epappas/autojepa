@@ -38,3 +38,4 @@ line.
 | [017](017-llm-model-fallback.md) | `llm_model` accepts a list — fallback on 404 (Chutes silent renames) | Accepted |
 | [018](018-bootstrap-env-inline.md) | Inline AR_* env vars into the Basilica bootstrap script (ADR-015 unblocker) | Accepted |
 | [019](019-ar-model-dir-proposal-mutation.md) | AR_MODEL_DIR must mutate proposal.params, not just the extractor copy (ADR-018 unblocker) | Accepted |
+| [020](020-rationale-in-proposal-events.md) | Surface proposer rationale in proposal-event payload (distinguish real LLM diffs from baseline fallbacks) | Accepted |

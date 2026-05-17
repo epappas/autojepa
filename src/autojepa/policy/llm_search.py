@@ -139,11 +139,19 @@ def _call_chat_api_messages(
     api_key: str,
     messages: list[dict],
     timeout: int,
-    max_tokens: int = 1024,
+    max_tokens: int = 4096,
     max_retries: int = 5,
     temperature: float = 1.0,
 ) -> str:
     """Call the OpenAI-compatible chat API, with model-name fallback.
+
+    Default max_tokens=4096 (raised from 1024 on 2026-05-16): reasoning
+    models like kimi-k2.6 split output into `reasoning_content` (internal
+    chain-of-thought) and `content` (the actual answer). At 1024 tokens
+    the reasoning_content consumed the budget, leaving content="" and
+    finish_reason="length". 4096 leaves headroom for both. Non-reasoning
+    OpenAI-compatible providers (DeepSeek, Llama, etc) are unaffected
+    since they only fill `content` and stop early.
 
     Per ADR-017, `model` may be a list of names; we try them in order
     and advance to the next one on a 404 (model does not exist on

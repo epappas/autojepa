@@ -325,6 +325,13 @@ def run_experiment(
                     "episode_id": episode_id,
                     "iter": iter_idx,
                     "params": params,
+                    # ADR-020: surface the proposer's self-described
+                    # rationale so post-mortems can tell `llm-diff`
+                    # from `improve_stability_before_fine_tuning`
+                    # (GreedyLLMPolicy fallback). Without this,
+                    # silent fallbacks look identical to real LLM
+                    # diffs in events.jsonl.
+                    "rationale": getattr(proposal, "rationale", None),
                 },
                 run_id=episode_id,
                 max_file_size_bytes=telemetry.max_file_size_bytes,

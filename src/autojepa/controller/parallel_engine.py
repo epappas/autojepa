@@ -291,6 +291,10 @@ def run_experiment_parallel(
                             "iter": iter_idx,
                             "params": params,
                             "concurrency": pcfg.max_concurrency,
+                            # ADR-020: see engine.py — surface the
+                            # proposer rationale so fallback diffs
+                            # are visible in post-mortems.
+                            "rationale": getattr(prop, "rationale", None),
                         },
                         run_id=episode_id,
                         max_file_size_bytes=telemetry.max_file_size_bytes,

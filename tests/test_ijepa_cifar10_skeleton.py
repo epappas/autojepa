@@ -149,8 +149,25 @@ class TestConfigYaml:
     def test_policy_is_hybrid_with_jepa_widened_defaults(self) -> None:
         cfg = self._config()
         assert cfg["policy"]["type"] == "hybrid"
-        assert cfg["policy"]["hybrid_param_explore_iters"] >= 25
-        assert cfg["policy"]["hybrid_stall_threshold"] >= 5
+        # The meaningful invariant: diff-mode MUST be reachable within
+        # the campaign budget. With hybrid_param_explore_iters >=
+        # max_iterations, the hybrid policy stays in param mode for
+        # the whole run (cf. v21 post-mortem 2026-05-16). The old
+        # literal >=25 assertion locked in that bug. Replace with the
+        # real reachability constraint.
+        max_iters = cfg["controller"]["max_iterations"]
+        explore = cfg["policy"]["hybrid_param_explore_iters"]
+        stall = cfg["policy"]["hybrid_stall_threshold"]
+        assert explore < max_iters, (
+            f"hybrid_param_explore_iters ({explore}) >= max_iterations "
+            f"({max_iters}): diff mode will never trigger in this campaign"
+        )
+        assert explore + stall < max_iters, (
+            f"explore+stall ({explore}+{stall}) >= max_iterations "
+            f"({max_iters}): no room for ratchet evidence after diff "
+            f"mode triggers"
+        )
+        assert stall >= 1, "stall threshold of 0 would switch on every iter"
 
     def test_intra_iteration_cancel_uses_ssl_defaults(self) -> None:
         cfg = self._config()

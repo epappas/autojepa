@@ -9,7 +9,12 @@ objective:
 target:
   type: basilica
   workdir: examples/ijepa-cifar10
-  timeout_s: 3600
+  # Bumped 2026-05-17 from 3600s -> 5400s. v21 iter=1 and v23 iter=1
+  # both cancelled because max_steps=6000 training (~1800s) + slow
+  # model-upload tail (~1700s) exceeded the old 3600s wall, losing
+  # iters that achieved probe>best. 5400s gives ~1900s upload
+  # headroom which covers the worst observed tail.
+  timeout_s: 5400
   prepare_cmd:
     - python3
     - /app/prepare.py
@@ -58,23 +63,34 @@ policy:
     num_targets: [2, 3, 4]
     ema_decay_start: [0.99, 0.996, 0.999]
     probe_eval_every_n_steps: [500]
-  # Migrated 2026-05-16 from Chutes (DeepSeek-V3-0324 — full family
-  # silently 404'd) to Moonshot Kimi. tests/eval/test_real_llm.py
-  # already validates the Phase-7 prompt contracts against kimi-k2.6
-  # so we know the prompts work with this model.
-  llm_api_url: "https://api.moonshot.ai/v1"
-  # ADR-017: ordered fallback list; on 404 the policy advances to the
-  # next entry. kimi-k2.6 is preferred (matches the test fixture),
-  # k2.5 is the most-recent stable fallback, moonshot-v1-auto routes
-  # to whatever Moonshot considers current.
+  # Migrated 2026-05-17 from Kimi (kimi-k2.6) to Claude Sonnet 4.6 via
+  # OpenRouter. v23 evidence: Kimi proposed an identical no-op diff
+  # (`use_qk_norm = True` line append after `sys.exit(...)`) for
+  # iter=3 AND iter=4 despite recent_errors/recent_logs feedback in
+  # the prompt. That falsifies Kimi at the current prompt; switching
+  # to a stronger reasoning model AND strengthening the diff prompt
+  # (anti-no-op rule + concrete VICReg example) is the joint fix per
+  # the falsifier-redesign decision (writeup §12 falsifier branch B).
+  llm_api_url: "https://openrouter.ai/api/v1"
+  # ADR-017 fallback list still applies. Opus is more capable but
+  # ~5x cost; Sonnet 4.6 is the cost/quality sweet spot for the diff
+  # generation prompt. opus-4-7 is the fallback if Sonnet fails.
   llm_model:
-    - "kimi-k2.6"
-    - "kimi-k2.5"
-    - "moonshot-v1-auto"
-  llm_api_key_env: "KIMI_API_KEY"
-  llm_timeout_s: 60
-  hybrid_param_explore_iters: 25
-  hybrid_stall_threshold: 5
+    - "anthropic/claude-sonnet-4-6"
+    - "anthropic/claude-opus-4-7"
+  llm_api_key_env: "OPENROUTER_API_KEY"
+  # Bumped 2026-05-17 from 60s -> 300s. v24 evidence: with the production
+  # diff prompt (full train.py + JEPA_HARD_RULES + history, ~10-20K input
+  # tokens), Claude takes >60s to generate the response. urllib cut the
+  # stream mid-output, leaving a 200-char truncated diff that ended
+  # mid-line ("lr=LEARNING_RATE,  "). Reproducible with the policy code;
+  # a minimal-prompt direct test of the same model returns a clean
+  # 618-char diff in <10s. 300s gives ample headroom; OpenRouter
+  # request-side timeout is typically much larger. See
+  # docs/phase-2-fix-diary.md 2026-05-17 entry.
+  llm_timeout_s: 300
+  hybrid_param_explore_iters: 3
+  hybrid_stall_threshold: 2
   hybrid_diff_failure_limit: 5
 
 controller:
