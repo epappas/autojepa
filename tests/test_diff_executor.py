@@ -79,6 +79,37 @@ def test_apply_diff_in_memory_preserves_other_lines():
     assert "EPOCHS = 10" in modified
 
 
+def test_apply_diff_in_memory_tolerates_wrong_hunk_count():
+    """LLM-generated diffs routinely have wrong line counts in @@ headers
+    (e.g. header claims `+12` but body has 11 +/context lines). GNU
+    patch rejects this as "malformed patch" regardless of --fuzz; the
+    recount pass must rewrite headers to match body before patch sees
+    the diff. Live evidence: v26 iter=5 (Claude-authored
+    CosineAnnealingLR diff) had `@@ -176,6 +176,12 @@` for a hunk
+    whose body actually contained 5 added + 6 context = 11 after-side
+    lines, not 12.
+    """
+    # Same edit content as VALID_DIFF, but header lies: claims -1,3 +1,3
+    # when body actually has 3 context+removed and 3 context+added.
+    # (Hand-tested: VALID_DIFF's header is correct; here we make a
+    # version with a wrong larger count to test recount.)
+    wrong_count_diff = """\
+--- a/train.py
++++ b/train.py
+@@ -1,7 +1,7 @@
+ import torch
+-LEARNING_RATE = 0.0026
++LEARNING_RATE = 0.0020
+ EPOCHS = 10
+"""
+    modified = _apply_diff_in_memory(ORIGINAL_SOURCE, wrong_count_diff, "train.py")
+    assert modified is not None, (
+        "recount should fix the wrong -1,7 +1,7 header so patch accepts the diff"
+    )
+    assert "LEARNING_RATE = 0.0020" in modified
+    assert "LEARNING_RATE = 0.0026" not in modified
+
+
 def test_apply_diff_in_memory_tolerates_offset_hunk_header():
     """LLM-generated diffs routinely get hunk line numbers wrong while
     keeping the context lines accurate. The patch backend with fuzz

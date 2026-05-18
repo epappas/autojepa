@@ -445,3 +445,79 @@ verdict we've been able to render.
 - v25: ~$5-8 Basilica + ~$0.10 Claude
 - v26 estimate: ~$15-25 (shorter than 20-iter budget since diff iters
   now actually run training, ~30-50 min each)
+
+---
+
+## 2026-05-18 — patch was strict on hunk counts too; recount preprocessing
+
+### What v26 iter=5 showed (live, ~03:30 to ~03:56)
+
+The patch-based applier from ADR-021 made it past `git apply`'s
+strict line-number rejection, but `patch` itself rejected v26 iter=5
+with:
+
+```
+patch failed (rc=2): patch: **** malformed patch at line 15:
+@@ -197,6 +203,7 @@ def main() -> int:
+```
+
+Inspection of Claude's actual 712-char CosineAnnealingLR diff: the
+first hunk header is `@@ -176,6 +176,12 @@` but its body has 5
+added lines + 6 context lines = 11 total on the after-side, not 12.
+`patch` is strict about this internal count mismatch regardless of
+--fuzz (fuzz handles position drift, not body-count drift).
+
+### Two fixes converged on iter=6
+
+1. Independently of any code change, `LLMDiffPolicy.propose` has a
+   correction-retry loop: on `_parse_diff_response` or apply failure
+   it appends the failure as an assistant message + asks Claude to
+   correct. On iter=6, Claude regenerated the diff with `@@ -170,6
+   +170,11 @@` — same content but with CORRECT line counts. patch
+   accepted it. Container is currently training with the patched
+   train.py (basilica pod `226b7d93-...`, 1/1 Running, age 5m39s).
+2. Added `_recount_hunks` preprocessor that rewrites each hunk
+   header from actual body content BEFORE passing to patch.
+   `@@ -176,6 +176,12 @@` becomes `@@ -176,6 +176,11 @@` (auto-
+   corrected from body). Position numbers preserved (let --fuzz
+   handle drift). This is the durable fix; iter=6 would have
+   succeeded the first time with the preprocessor in place.
+
+Both fixes are validated:
+- Direct unit test (`test_apply_diff_in_memory_tolerates_wrong_hunk_count`):
+  hand-crafted diff with `+1,7` header on a 3-line body now applies
+  cleanly. 15/15 diff_executor tests pass.
+- Live v26 iter=6: substantive diff (CosineAnnealingLR + scheduler.step)
+  applied, base64-injected, basilica pod actively training on it.
+
+### What this means
+
+- The diff-mode pipeline is end-to-end working. Real Claude diff →
+  preprocessor → patch → AR_MODIFIED_SOURCE → basilica pod → trained
+  on GPU. First time in AutoJEPA's history.
+- v26 iter=6's outcome (probe value or canary failure) is the FIRST
+  real Phase-2 falsifier signal. If probe > best (0.265) it means a
+  Claude-authored code mutation IMPROVED on Claude-authored param
+  search.
+- If iter=6 produces a healthy probe — even if it doesn't beat best —
+  Phase-2 mechanism is fully validated and we can investigate ratchet
+  separately.
+
+### NOT yet fixed
+
+- `intra_iteration_cancel` forecaster still kills `max_steps=6000`
+  iters with rising-probe-then-small-dip patterns (v26 iter=1
+  cancelled at peak 0.265, would have beaten baseline 0.239).
+- Conversation state pollution from failed diff attempts: iter=6's
+  diff is essentially identical to iter=5's modulo line numbers,
+  meaning Claude is reaching the same approach despite "failure
+  feedback." Not necessarily bad — might mean Claude is convinced
+  CosineAnnealingLR is right.
+
+### Cost so far this session
+
+- Plus a handful of OpenRouter direct-test calls for diagnosis (~$0.02).
+- v26 iter=6 will be the first iter to actually train with a diff —
+  cost depends on max_steps Claude chose. The diff doesn't override
+  the LR/batch/steps params from the iter=2 keep that's still
+  active.

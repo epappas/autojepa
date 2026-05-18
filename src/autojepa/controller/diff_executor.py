@@ -9,6 +9,7 @@ from __future__ import annotations
 import base64
 import logging
 import os
+import re
 import subprocess
 import tempfile
 from pathlib import Path
@@ -29,6 +30,80 @@ _GIT_ENV = {
 }
 
 
+_HUNK_HEADER_RE = re.compile(r"^@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@(.*)$")
+
+
+def _recount_hunks(diff: str) -> str:
+    """Rewrite each @@ hunk header so the counts match the actual body.
+
+    LLM-authored diffs routinely have wrong line counts in @@ headers
+    even when the body content is correct (e.g. header claims +12
+    lines but body has 11). GNU `patch` rejects this as "malformed
+    patch" regardless of --fuzz, because fuzz handles position drift,
+    not internal hunk-count mismatch. This recount pass walks each
+    hunk's body, counts context/added/removed lines, and rewrites the
+    header. Position numbers are preserved (let patch's --fuzz
+    relocate).
+
+    Live evidence: v26 iter=5 (Claude-authored CosineAnnealingLR diff,
+    712 chars, semantically correct) had `@@ -176,6 +176,12 @@` for a
+    hunk whose body actually contained 5 added + 6 context lines (i.e.
+    "+11", not "+12"). patch rejected it; recount + patch accepts.
+    """
+    lines = diff.splitlines(keepends=True)
+    out: list[str] = []
+    i = 0
+    while i < len(lines):
+        line = lines[i]
+        stripped = line.rstrip("\n")
+        m = _HUNK_HEADER_RE.match(stripped)
+        if not m:
+            out.append(line)
+            i += 1
+            continue
+
+        old_start = int(m.group(1))
+        new_start = int(m.group(2))
+        tail = m.group(3)
+
+        # Find end of this hunk: next @@ header, next file header, or EOF.
+        body_start = i + 1
+        body_end = body_start
+        while body_end < len(lines):
+            bl = lines[body_end].rstrip("\n")
+            if (
+                bl.startswith("@@")
+                or bl.startswith("--- ")
+                or bl.startswith("+++ ")
+                or bl.startswith("diff --git")
+            ):
+                break
+            body_end += 1
+
+        old_count = 0
+        new_count = 0
+        for k in range(body_start, body_end):
+            bl = lines[k]
+            if bl.startswith("\\"):
+                # "\ No newline at end of file" — not a counted line.
+                continue
+            if bl.startswith("+"):
+                new_count += 1
+            elif bl.startswith("-"):
+                old_count += 1
+            else:
+                # context line: starts with " " or is fully empty
+                old_count += 1
+                new_count += 1
+
+        new_header = f"@@ -{old_start},{old_count} +{new_start},{new_count} @@{tail}\n"
+        out.append(new_header)
+        out.extend(lines[body_start:body_end])
+        i = body_end
+
+    return "".join(out)
+
+
 def _apply_diff_in_memory(source: str, diff: str, filename: str) -> str | None:
     """Apply a unified diff to source in a temp directory, return patched content.
 
@@ -46,6 +121,11 @@ def _apply_diff_in_memory(source: str, diff: str, filename: str) -> str | None:
 
     Returns the modified source string, or None on failure.
     """
+    # Preprocess: fix hunk line counts that LLMs reliably get wrong.
+    # patch with --fuzz handles position drift; only recount fixes
+    # internal hunk-count mismatch. See ADR-021 update 2026-05-18.
+    diff = _recount_hunks(diff)
+
     with tempfile.TemporaryDirectory(prefix="ar-diff-") as tmpdir:
         # patch -p1 strips one path prefix, so place the file under a
         # subdir to match the diff's "a/<filename>" convention.
