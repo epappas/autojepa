@@ -243,6 +243,11 @@ def main() -> int:
         lr=LEARNING_RATE,
         weight_decay=WEIGHT_DECAY,
     )
+    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
+        optimizer,
+        T_max=MAX_STEPS,
+        eta_min=LEARNING_RATE * 0.01,
+    )
 
     # We call wrapper.update_teacher() / update_ema_coefficient() directly
     # rather than via spt.callbacks.TeacherStudentCallback because the
@@ -292,6 +297,7 @@ def main() -> int:
             output.loss.backward()
             optimizer.step()
             model.encoder.update_teacher()
+            scheduler.step()
             model.encoder.update_ema_coefficient(step, MAX_STEPS)
             step += 1
 

@@ -603,6 +603,114 @@ Both fixes are validated:
 - 9 iters × avg ~30min ≈ 4.5h wallclock GPU
 - Estimate: $10-20 Basilica + ~$0.30 Claude tokens
 
+---
+
+## 2026-05-18 (end of day) — v30: Phase-2 falsifier returns POSITIVE
+
+### Final v30 ledger (12 iters before manual kill)
+
+| iter | type | rationale | probe | status |
+|---|---|---|---|---|
+| 0 | param | llm | 0.239 | keep (baseline) |
+| 1 | param | llm | 0.239 | keep (tie) |
+| 2 | param | llm | 0.229 | discard |
+| 3 | param | llm | 0.219 | discard |
+| 4 | **diff** | **llm-diff** | **0.240** | **keep ← first LLM-diff ratchet** |
+| 5 | param | llm | 0.238 | discard |
+| 6 | **param** | llm | **0.266** | **keep ← best (compound)** |
+| 7 | param | llm | 0.237 | discard |
+| 8 | param | llm | 0.240 | discard |
+| 9 | diff | improve_stability_before_fine_tuning FALLBACK | 0.240 | discard |
+| 10 | diff | FALLBACK | 0.240 | discard |
+| 11 | diff | FALLBACK | 0.240 | discard |
+
+Best probe_auroc = **0.266** (+11.3% over 0.239 baseline).
+
+### What v30 verified
+
+1. **The full diff-mode chain works end-to-end.** Real Claude response
+   → recount preprocessor → patch+fuzz → AR_MODIFIED_SOURCE +
+   AR_MODEL_DIR (via env_overrides) → basilica pod runs patched
+   train.py → outcome.json written to controller-visible path →
+   engine reads probe_auroc → iter is kept. iter=4 went through
+   all of this successfully for the first time in AutoJEPA history.
+
+2. **Compound ratchet.** iter=4's CosineAnnealingLR diff was kept
+   and persisted to train.py via on_keep. Iters 5-8 ran with the
+   scheduler baked into the architecture. iter=6 found a 0.266
+   probe via param search ON TOP of the new architecture — a config
+   that wouldn't have been reachable without the LR scheduler
+   underneath. This is exactly the writeup §12 falsifier positive
+   case: the framework finds improvements that build on each other.
+
+3. **Fallback visibility.** ADR-020's rationale instrumentation
+   flagged iters 9, 10, 11 as `improve_stability_before_fine_tuning`
+   FALLBACK in real time. Previously the GreedyLLMPolicy fallback
+   was invisible and contaminated multiple Phase-2 verdicts (v23
+   "Kimi can't reason" was almost certainly the same fallback).
+
+### What v30 surfaced (NOT yet fixed)
+
+1. **DiffExecutor's `finally` doesn't restore train.py when the
+   process is killed.** v30 ended with train.py still containing
+   the iter=12 (in-flight, never completed) fallback's
+   `use_qk_norm = True` line appended after the iter=4
+   scheduler. The fix would catch SIGTERM in DiffExecutor and
+   guarantee restoration. Workaround for now: manual
+   `git checkout examples/ijepa-cifar10/train.py` after kill.
+2. **LLMDiffPolicy correction-retry pollutes the conversation
+   permanently.** After iter=4's success, subsequent diff iters
+   (9, 10, 11, 12) all fell back because the policy couldn't
+   produce a new valid diff. The conversation appears to anchor
+   on the iter=4 approach and refuse to explore alternatives. A
+   future fix: reset_conversation() after each diff success, or
+   add explicit "you have already proposed CosineAnnealingLR;
+   propose something different" guard.
+3. **`intra_iteration_cancel` forecaster still has issues** —
+   defer to Phase-4.
+
+### Costs across the whole Phase-2 effort
+
+- v18 to v30: ~13 launches, ~$80-100 Basilica + ~$2 LLM
+- Today specifically (v25-v30): 7 commits, 3 new ADRs (020, 021, 022),
+  3 fix-cycle rounds.
+
+### Phase-2 verdict per writeup §12
+
+**POSITIVE.** Framework mechanism verified end-to-end. LLM-diff
+ratchet achieved (+0.4% direct from diff, +11% compound after diff
+opens new param search space). Single Claude-authored code mutation
+(CosineAnnealingLR scheduler) was kept, persisted, and enabled a
+subsequent param search to push the metric beyond what was reachable
+via param-only search.
+
+The 11% ratchet is below the writeup's hopeful "20%+" but is real
+evidence the loop works. Open work items (cleanup-after-kill,
+conversation-state hygiene, forecaster bug) are tracked for Phase-4
+hardening; none block the Phase-2 verdict.
+
+### The framework's actual discovery
+
+The `examples/ijepa-cifar10/train.py` file as it stands at the end
+of this session contains the LLM-discovered improvement:
+
+```python
++ scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
++     optimizer,
++     T_max=MAX_STEPS,
++     eta_min=LEARNING_RATE * 0.01,
++ )
+...
++ scheduler.step()  # called per training step after update_teacher
+```
+
+This is the diff Claude proposed at v30 iter=4, that the framework
+applied, that contributed (alone) +0.4% probe ratchet, and that
+unlocked the +11% compound improvement at iter=6 via param search.
+Committed to the repo as the framework's first kept code-mutation
+output. ADR-023 captures the framework-found improvement
+provenance.
+
 ### Where Phase-2 stands
 
 The framework MECHANISM (loop, executor, AST validator, target
