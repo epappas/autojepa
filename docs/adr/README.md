@@ -40,3 +40,4 @@ line.
 | [019](019-ar-model-dir-proposal-mutation.md) | AR_MODEL_DIR must mutate proposal.params, not just the extractor copy (ADR-018 unblocker) | Accepted |
 | [020](020-rationale-in-proposal-events.md) | Surface proposer rationale in proposal-event payload (distinguish real LLM diffs from baseline fallbacks) | Accepted |
 | [021](021-patch-not-git-apply-for-llm-diffs.md) | Use `patch --fuzz=5` (not `git apply`) for LLM-generated diffs — git apply rejects context-correct diffs with wrong line numbers | Accepted |
+| [022](022-env-overrides-for-diff-proposals.md) | Propagate engine env overrides through DiffProposal.env_overrides so AR_MODEL_DIR reaches the target adapter for diff iters | Accepted |

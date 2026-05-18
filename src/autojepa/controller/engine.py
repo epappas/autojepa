@@ -317,6 +317,17 @@ def run_experiment(
                 _params_attr = getattr(proposal, "params", None)
                 if isinstance(_params_attr, dict):
                     _params_attr["AR_MODEL_DIR"] = model_dir
+                # ADR-022: also propagate via env_overrides so DiffExecutor
+                # (which builds its own params dict and ignores the
+                # extractor's output) can pass AR_MODEL_DIR to the target.
+                # Without this, diff iters run with AR_MODEL_DIR unset,
+                # train.py writes outcome.json to the fallback /app/
+                # artifacts path, and the basilica adapter polls the
+                # correct model_dir path and finds nothing -> iter
+                # incorrectly marked failed despite successful training.
+                _env_attr = getattr(proposal, "env_overrides", None)
+                if isinstance(_env_attr, dict):
+                    _env_attr["AR_MODEL_DIR"] = model_dir
 
             emit(
                 telemetry.trace_path,

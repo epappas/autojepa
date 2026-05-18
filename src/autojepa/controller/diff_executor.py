@@ -229,6 +229,14 @@ class DiffExecutor:
             "AR_MODIFIED_SOURCE": encoded,
             "AR_MODIFIED_TARGET": self._filename,
         }
+        # ADR-022: merge engine-set env overrides (notably AR_MODEL_DIR
+        # for outcome.json discovery). Without this, the target adapter
+        # runs train.py with AR_MODEL_DIR unset and the basilica
+        # adapter polls a different path than train.py writes to.
+        env_overrides = getattr(proposal, "env_overrides", None)
+        if isinstance(env_overrides, dict):
+            for k, v in env_overrides.items():
+                params[k] = str(v)
 
         Path(run_dir).mkdir(parents=True, exist_ok=True)
         # Write modified source to disk so local CommandTarget runs it;

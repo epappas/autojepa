@@ -110,6 +110,34 @@ def test_apply_diff_in_memory_tolerates_wrong_hunk_count():
     assert "LEARNING_RATE = 0.0026" not in modified
 
 
+def test_diff_executor_forwards_env_overrides_to_target(tmp_path):
+    """ADR-022: engine sets AR_MODEL_DIR on proposal.env_overrides; the
+    DiffExecutor must merge env_overrides into the params dict it
+    passes to target.run, otherwise train.py runs without AR_MODEL_DIR
+    and writes outcome.json to the wrong path (v29 iter=3 hit this:
+    training succeeded with probe_auroc=0.2402 but the controller
+    couldn't find outcome.json and marked the iter as failed).
+    """
+    src = tmp_path / "train.py"
+    src.write_text(ORIGINAL_SOURCE, encoding="utf-8")
+    target = FakeTarget()
+    executor = DiffExecutor(target, str(src))
+
+    proposal = DiffProposal(diff=VALID_DIFF, rationale="llm-diff")
+    proposal.env_overrides["AR_MODEL_DIR"] = "/tmp/test_model_dir"
+    proposal.env_overrides["ANOTHER_VAR"] = "value"
+
+    outcome = executor.execute(proposal, str(tmp_path / "run"))
+    assert outcome.status == "ok", outcome.stderr
+    assert "AR_MODIFIED_SOURCE" in target.last_params  # diff machinery still works
+    assert target.last_params.get("AR_MODEL_DIR") == "/tmp/test_model_dir", (
+        "env_overrides[AR_MODEL_DIR] must reach the target adapter as a param"
+    )
+    assert target.last_params.get("ANOTHER_VAR") == "value", (
+        "All env_overrides keys must be forwarded, not just AR_MODEL_DIR"
+    )
+
+
 def test_apply_diff_in_memory_tolerates_offset_hunk_header():
     """LLM-generated diffs routinely get hunk line numbers wrong while
     keeping the context lines accurate. The patch backend with fuzz

@@ -9,6 +9,16 @@ class Proposal:
     """Base proposal type shared by all policy families."""
 
     rationale: str = ""
+    # Engine-injected env overrides forwarded to the executor (e.g.
+    # AR_MODEL_DIR). ParamProposal already smuggles these through its
+    # `params` dict, but DiffProposal carries no params, so the engine
+    # had no way to reach the target adapter for diff iters. v29 iter=3
+    # surfaced this: training succeeded with the LLM-authored scheduler
+    # diff (probe_auroc=0.2402, outcome.json written) but the controller
+    # marked the iter as failed because outcome.json went to the
+    # /app/artifacts/ fallback path instead of $AR_MODEL_DIR/outcome.json.
+    # See ADR-022 + docs/phase-2-fix-diary.md 2026-05-18.
+    env_overrides: dict[str, str] = field(default_factory=dict)
 
 
 @dataclass
