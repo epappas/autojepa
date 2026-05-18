@@ -261,7 +261,7 @@ def main() -> int:
 
     def _on_sigterm(signum: int, frame: object) -> None:
         print(
-            f"[fatal] SIGTERM received at step={step} (basilica TTL or pod kill); "
+            f"[fatal] SIGTERM received at step {step} (basilica TTL or pod kill); "
             f"writing failure outcome and exiting",
             flush=True, file=sys.stderr,
         )
@@ -281,7 +281,7 @@ def main() -> int:
     step = 0
     best_probe_auroc = 0.0
     last_heartbeat_t = time.monotonic()
-    print(f"[pretrain] starting loop max_steps={MAX_STEPS} batch={BATCH_SIZE}", flush=True)
+    print(f"[pretrain] starting loop, max_steps {MAX_STEPS}, batch {BATCH_SIZE}", flush=True)
     while step < MAX_STEPS:
         for images in pretrain_loader:
             if step >= MAX_STEPS:
@@ -303,25 +303,35 @@ def main() -> int:
                     torch.cuda.memory_allocated() / 1e9
                     if torch.cuda.is_available() else 0.0
                 )
+                # Use no `key=value` patterns: BasilicaTarget._parse_metrics
+                # extracts every `\w+=[\d.]+` match it sees in stdout, then
+                # accepts the dict if ANY key matches a known metric (loss is
+                # one). With key=value heartbeats the parser was forming a
+                # bogus metrics dict that lacked probe_auroc, and the engine
+                # was demoting status to "failed" at the first heartbeat
+                # (v27 iter=0 closed at 141s — see diary 2026-05-18).
                 print(
-                    f"[heartbeat] step={step}/{MAX_STEPS} loss={float(output.loss.item()):.4f} "
-                    f"dt={dt:.1f}s mem={mem_gb:.2f}GB",
+                    f"[heartbeat] step {step}/{MAX_STEPS} | "
+                    f"loss {float(output.loss.item()):.4f} | "
+                    f"took {dt:.1f}s | mem {mem_gb:.2f}GB",
                     flush=True,
                 )
 
             if step % PROBE_EVAL_EVERY_N_STEPS == 0 or step == MAX_STEPS:
-                print(f"[probe] starting at step={step}", flush=True)
+                print(f"[probe] starting at step {step}", flush=True)
                 try:
                     probe_auroc = _run_linear_probe(model, DATA_DIR, device=device)
                 except BaseException as exc:
                     print(
-                        f"[probe] FAILED at step={step}: "
+                        f"[probe] FAILED at step {step}: "
                         f"{type(exc).__name__}: {exc}",
                         flush=True, file=sys.stderr,
                     )
                     traceback.print_exc()
                     raise
-                print(f"[probe] ok step={step} probe_auroc={probe_auroc:.4f}", flush=True)
+                # Keep `probe_auroc=X` here: it's the AUTHORITATIVE metric
+                # line that the basilica adapter parses for objective value.
+                print(f"[probe] ok at step {step}; probe_auroc={probe_auroc:.4f}", flush=True)
                 best_probe_auroc = max(best_probe_auroc, probe_auroc)
                 emit_progress(
                     step=step,
