@@ -57,7 +57,18 @@ policy:
     learning_rate: [0.00005, 0.0001, 0.0002, 0.0005]
     weight_decay: [0.0, 0.05, 0.1]
     batch_size: [64, 128, 256]
-    max_steps: [2000, 4000, 6000]
+    # Narrowed 2026-05-18 from [2000, 4000, 6000] -> [2000, 3000, 4000].
+    # Five campaigns (v21, v23, v24, v25, v26 iter=1, v28 iter=1) all
+    # showed iters with max_steps=6000 silently killed by basilica
+    # around step 4300 (~46 min into pod life, under the 70-min TTL —
+    # exact mechanism unclear, possibly intra-pod resource limit or
+    # network event). Heartbeats prove training itself is healthy
+    # before the kill (loss <0.02, mem stable at 0.30 GB). v28 iter=0
+    # at max_steps=4000 completed cleanly in 62 min. Keeping
+    # max_steps <= 4000 avoids the failure mode entirely while still
+    # giving the policy 4-8x more steps than the canary (200) for the
+    # actual training signal. Added 3000 to widen the search space.
+    max_steps: [2000, 3000, 4000]
     predictor_depth: [2, 3, 4, 6]
     predictor_embed_dim: [128, 192]
     num_targets: [2, 3, 4]
