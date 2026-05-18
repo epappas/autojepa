@@ -521,3 +521,126 @@ Both fixes are validated:
   cost depends on max_steps Claude chose. The diff doesn't override
   the LR/batch/steps params from the iter=2 keep that's still
   active.
+
+---
+
+## 2026-05-18 (end of v26) — the plumbing works; Claude's diffs break training
+
+### v26 complete tally
+
+| iter | type | rationale | status | probe | elapsed | notes |
+|---|---|---|---|---|---|---|
+| 0 | param | llm | keep | 0.239 | 39min | baseline |
+| 1 | param | llm | cancelled | 0.265 peak | 99min | forecaster killed it AGAIN despite peak > baseline |
+| 2 | param | llm | keep | **0.265** | 22min | best |
+| 3 | param | llm | discard | 0.225 | 22min | |
+| 4 | param | llm | discard | 0.219 | 20min | |
+| 5 | diff | llm-diff | failed | — | 0s | patch rejected; wrong hunk count (would have applied with the recount fix in 18abeef) |
+| 6 | diff | llm-diff | failed | — | 97min | diff APPLIED, training silently stopped after step 2500 |
+| 7 | diff | llm-diff | failed | — | 50min | diff APPLIED, training silently stopped before any probe emit |
+| 8 | diff | llm-diff | failed | — | 97min | identical to iter=6 |
+| 9 | diff | improve_stability_before_fine_tuning **FALLBACK** | killed by me | — | — | LLMDiffPolicy hit max_correction_retries, GreedyLLMPolicy fallback fired with `use_qk_norm = True` no-op; ADR-020 monitor caught it in real time |
+
+### What v26 PROVED (positive findings)
+
+1. **Diff plumbing is end-to-end working.** Real Claude diff →
+   recount → patch → AR_MODIFIED_SOURCE → basilica pod base64-
+   inject → `[ar] wrote modified source to train.py (20616 b64
+   chars)` confirmed in pod logs → patched train.py executed on GPU.
+   First time in AutoJEPA history.
+2. **Claude proposes substantive JEPA-relevant changes.** iter=6,7,8
+   all attempted a CosineAnnealingLR scheduler with per-batch
+   `scheduler.step()`. This is exactly what `JEPA_HARD_RULES`
+   high-value diff target #3 says to try (EMA/schedule tuning).
+   Claude is reading the prompt and reasoning about the domain.
+3. **The ADR-020 rationale instrumentation worked.** When the
+   GreedyLLMPolicy fallback fired on iter=9, the monitor flagged
+   "!!! FALLBACK" in real time. Previously this would have been
+   invisible and I would have falsely concluded Claude was producing
+   garbage.
+
+### What v26 SURFACED (real bugs / open work)
+
+1. **Claude's CosineAnnealingLR diffs cause SILENT training stalls.**
+   In iter=6/7/8 the basilica pod log shows training starts cleanly,
+   emits progress through step ~2000, then logs go silent for ~80
+   minutes before the iter closes as failed with no probe. No
+   traceback, no exit message, no OOM-killer marker. Most likely
+   candidates: (a) probe_eval at step 2500 OOMs silently because the
+   scheduler bumps memory pressure; (b) some interaction between
+   `scheduler.step()` per-batch and `update_ema_coefficient(step,
+   MAX_STEPS)` causes a numerical issue that hangs at the next probe
+   eval; (c) the basilica pod TTL hits during a slow probe and the
+   pod gets restarted (RESTART count was 3 on iter=6's pod). Need
+   focused diagnosis.
+2. **DiffExecutor's `finally` cleanup doesn't always restore
+   `train.py`.** After v26 ended, train.py was still dirty with the
+   leftover scheduler addition from a failed iter. Manual
+   `git checkout` was needed. Subsequent iters re-read this dirty
+   state as `source` for their diff prompt and apply ON TOP of
+   leftover modifications. The finally clause path must have a leak
+   somewhere (likely when target.run hangs without raising).
+3. **Conversation state pollutes diff proposals.** iter=6, 7, 8 all
+   propose essentially the same CosineAnnealingLR approach despite
+   each one being marked as failed in the history. Claude isn't
+   exploring alternatives. Either:
+   (a) the `recent_errors`/`recent_logs` context isn't surfacing the
+       "silent stall after step 2500" signal usefully (because there's
+       no error string, just silence)
+   (b) Claude is anchoring on its earlier attempt and refining the
+       hunk-count math instead of pivoting to a different approach
+   The diff-correction prompt may need an explicit "if your previous
+   N attempts failed with the same approach, try a DIFFERENT one"
+   guard.
+4. **`intra_iteration_cancel` forecaster bug still costing real
+   wins.** v26 iter=1 cancelled with peak probe=0.265 (which became
+   the best), the wall was 5400s, elapsed was 5920s — wait, the
+   cancellation actually was the wall this time. Confused. Will
+   re-diagnose.
+
+### Cost on v26 specifically
+
+- 9 iters × avg ~30min ≈ 4.5h wallclock GPU
+- Estimate: $10-20 Basilica + ~$0.30 Claude tokens
+
+### Where Phase-2 stands
+
+The framework MECHANISM (loop, executor, AST validator, target
+adapter, basilica integration, telemetry, rationale visibility) is
+verifiably working end-to-end. We have a +11% param-mode ratchet
+(0.239 → 0.265). The DIFF arm executes diffs but the resulting
+patched train.py crashes silently in a way the framework can't yet
+attribute to a specific cause.
+
+This is not yet the writeup §12 falsifier verdict in either
+direction. To get there from here:
+
+- Diagnose the iter=6 silent-stall (read full basilica logs incl
+  stderr, run train.py + iter=6 diff locally on CPU if possible)
+- Fix the train.py to be more robust to LLM modifications (add try/
+  except around probe_eval, emit "step N progress not reaching probe"
+  watchdog events, force flush on every step)
+- Fix the DiffExecutor finally-cleanup leak so failed diffs don't
+  pollute subsequent iters
+- Optionally: tighten the diff prompt to avoid LR schedulers if
+  diagnosis shows that's the trigger, OR add a "scheduler.step()
+  must be inside a try/except" requirement
+
+### Decision point for next session
+
+Three reasonable next moves; user input needed:
+
+A. Diagnose the iter=6 silent stall first (~1-2h of debugging),
+   then v27 with the fix landed. Highest confidence path to a
+   working diff iter.
+B. Make train.py loud-on-stall (timeouts around probe_eval, watchdog
+   prints) and launch v27 to surface the actual error in real time.
+   Lower upfront cost, more compute spend if the watchdog doesn't
+   help.
+C. Accept current evidence as Phase-2 partial-verdict: "framework
+   works, LLM intelligence is producing changes the example can't
+   tolerate" and pivot to Phase 3 (trace-jepa) with the open issues
+   logged.
+
+Costs across the whole Phase-2 effort (v18-v26): ~$50-80 Basilica +
+~$1-2 LLM.
