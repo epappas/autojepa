@@ -250,8 +250,38 @@ def main() -> int:
     # and we run a manual training loop. Verified live on v9
     # (commit badbe80) which crashed in the callback with
     # `AttributeError: 'NoneType' object has no attribute 'global_step'`.
+    # Loud-on-stall instrumentation (added 2026-05-18 after v26 iter=6/7/8
+    # all silently stopped emitting progress around step 2000-2500 with no
+    # traceback). Heartbeat every 50 steps so silence between heartbeats
+    # narrows the kill window to <50 steps. Probe-eval try/except so OOM
+    # or hang in probe code surfaces a typed exception instead of looking
+    # like training froze. SIGTERM trap so basilica TTL kills become
+    # distinguishable from Python-side hangs.
+    import signal as _signal
+
+    def _on_sigterm(signum: int, frame: object) -> None:
+        print(
+            f"[fatal] SIGTERM received at step={step} (basilica TTL or pod kill); "
+            f"writing failure outcome and exiting",
+            flush=True, file=sys.stderr,
+        )
+        try:
+            _write_outcome(
+                model_dir=ARTIFACT_DIR, status="failed", metrics={},
+                elapsed_s=time.monotonic() - t_start,
+                completed_steps=step, step_target=MAX_STEPS,
+                reason=f"sigterm_at_step_{step}",
+            )
+        except Exception:
+            pass
+        sys.exit(143)
+
+    _signal.signal(_signal.SIGTERM, _on_sigterm)
+
     step = 0
     best_probe_auroc = 0.0
+    last_heartbeat_t = time.monotonic()
+    print(f"[pretrain] starting loop max_steps={MAX_STEPS} batch={BATCH_SIZE}", flush=True)
     while step < MAX_STEPS:
         for images in pretrain_loader:
             if step >= MAX_STEPS:
@@ -265,8 +295,33 @@ def main() -> int:
             model.encoder.update_ema_coefficient(step, MAX_STEPS)
             step += 1
 
+            if step % 50 == 0:
+                now = time.monotonic()
+                dt = now - last_heartbeat_t
+                last_heartbeat_t = now
+                mem_gb = (
+                    torch.cuda.memory_allocated() / 1e9
+                    if torch.cuda.is_available() else 0.0
+                )
+                print(
+                    f"[heartbeat] step={step}/{MAX_STEPS} loss={float(output.loss.item()):.4f} "
+                    f"dt={dt:.1f}s mem={mem_gb:.2f}GB",
+                    flush=True,
+                )
+
             if step % PROBE_EVAL_EVERY_N_STEPS == 0 or step == MAX_STEPS:
-                probe_auroc = _run_linear_probe(model, DATA_DIR, device=device)
+                print(f"[probe] starting at step={step}", flush=True)
+                try:
+                    probe_auroc = _run_linear_probe(model, DATA_DIR, device=device)
+                except BaseException as exc:
+                    print(
+                        f"[probe] FAILED at step={step}: "
+                        f"{type(exc).__name__}: {exc}",
+                        flush=True, file=sys.stderr,
+                    )
+                    traceback.print_exc()
+                    raise
+                print(f"[probe] ok step={step} probe_auroc={probe_auroc:.4f}", flush=True)
                 best_probe_auroc = max(best_probe_auroc, probe_auroc)
                 emit_progress(
                     step=step,
