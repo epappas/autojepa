@@ -752,3 +752,158 @@ C. Accept current evidence as Phase-2 partial-verdict: "framework
 
 Costs across the whole Phase-2 effort (v18-v26): ~$50-80 Basilica +
 ~$1-2 LLM.
+
+---
+
+## 2026-05-19 — Phase-4 hardening: four open items closed
+
+Picked up the four items the v30 end-of-day entry listed as deferred.
+All four landed in this worktree; each with a failing-without-fix
+regression test, three with new ADRs (024, 025, 026), one with the
+e2e harness that should prevent the next round of whack-a-mole.
+
+### P1: integration test for diff-mode end-to-end
+
+**New file:** `tests/test_diff_mode_e2e.py` (2 tests, ~1.2s on CPU).
+
+Drives the FULL chain: `_OneShotDiffPolicy` -> `run_experiment` ->
+`HybridExecutor` -> `DiffExecutor` -> `_SubprocessDiffTarget` (decodes
+AR_MODIFIED_SOURCE, runs the patched python script, parses metrics
+back). Asserts:
+
+- iteration event has `probe_auroc` populated (catches the
+  `assert isinstance(ParamProposal)` regression that hid in the
+  legacy executor before ADR-021).
+- `AR_MODEL_DIR` reaches the target (catches the ADR-022 regression
+  where env_overrides didn't propagate).
+- `AR_MODIFIED_SOURCE` decoded by the target contains the
+  scheduler addition (catches the `[:200]` truncation if it ever
+  comes back AND the patch-rejects-wrong-hunk-count failure).
+- Proposal event carries `rationale="llm-diff"` (catches ADR-020
+  regression on the fallback monitor).
+
+Why this matters: the v30 diff-mode work was 13 Basilica campaigns
+of "ship, watch, post-mortem" because every failure mode was
+plumbing, not training. A 1.2s CPU test would have surfaced ADR-022
+in seconds instead of v29.
+
+### P2: DiffExecutor SIGTERM/SIGKILL cleanup (ADR-024)
+
+**Changes:** `src/autojepa/controller/diff_executor.py` — new
+`_restore_on_signal` context manager and `recover_restore_marker`
+helper. `controller/continuous.py` calls the recovery helper at the
+top of `_run_diff_mode` and `_run_hybrid_mode`.
+
+**New file:** `tests/test_diff_executor_signal_cleanup.py` (7 tests).
+End-to-end: spawn a child running DiffExecutor.execute against a
+target that blocks forever, SIGTERM the child mid-run, assert the
+file is restored AND the sidecar marker is cleared. Companion
+SIGKILL test asserts the sidecar SURVIVES the uncatchable kill
+and `recover_restore_marker` restores from it on simulated next
+boot.
+
+The signal handler chains to the previously-installed handler (the
+engine's ShutdownHandler) so engine shutdown semantics are
+preserved — the only added behaviour is "restore the file first,
+then let the existing handler run."
+
+### P3: LLMDiffPolicy conversation hygiene (ADR-025)
+
+**Changes:** `src/autojepa/policy/llm_diff.py` — `_summarize_diff`,
+`_extract_prior_diff_summaries`, `_last_kept_diff_iter` helpers;
+`_format_diff_prompt` gains a `prior_approaches` parameter that
+emits a "PREVIOUSLY PROPOSED APPROACHES (DO NOT propose any of
+these again)" section; `LLMDiffPolicy.propose` resets
+`self._conversation` once per newly-observed kept-diff iter and
+passes the prior-approaches list to the prompt formatter.
+
+**New file:** `tests/test_llm_diff_hygiene.py` (14 tests). Covers:
+gist extraction (dedupe, comment-skip, context-only fallback);
+prior-approach extraction (param iters skipped, recency ordering);
+policy-level reset behaviour (resets on new keep, persists on
+already-acknowledged keep); end-to-end mock that captures the
+LLM API call and asserts the anti-repeat section is in the user
+message.
+
+Chose BOTH options (reset-on-keep AND anti-repeat-in-prompt)
+because they defend different failure modes: reset handles "stale
+baseline after iter=N keep"; anti-repeat handles "within a single
+propose() call, correction-retry loop hammers the same approach."
+One without the other leaves a hole.
+
+### P4: IntraIterationGuard lock-in-wins (ADR-026)
+
+**Changes:** `src/autojepa/controller/intra_iteration.py` —
+`evaluate()` short-circuits to `"continue"` with reason
+`"current_already_beats_best"` when the observed series already
+crosses the bar.
+
+**New file:** `tests/test_intra_iteration_lock_in_wins.py` (7 tests).
+Both directions. Mirror tests assert the unchanged behaviour: a
+truly doomed series (never reached best) still cancels.
+
+Diagnosis was straightforward once I read `evaluate()` directly:
+for direction="max" the code negates and runs `should_early_stop`,
+which checks `predicted > target`. There was no guard for the
+case where the CURRENT series already contained values exceeding
+target — the forecaster just smoothed past them. The fix is a
+one-liner per direction; the test suite is the load-bearing
+artifact.
+
+I disagreed with the "this one is risky" framing in the
+hand-off and want to flag this for review:
+
+- The "wall hit during model-upload window" failure (v26 iter=1)
+  is a SEPARATE bug from the forecaster — diary's own re-diagnosis
+  noted "the cancellation actually was the wall this time."
+- The lock-in fix is precisely scoped: it ONLY affects series that
+  already crossed best. Series that never crossed best continue
+  to be cancellable by the forecaster on the unchanged path.
+- The mock-able semantic is "any observed value >= best -> keep
+  alive". That's a property the engine can independently verify.
+
+If a reviewer disagrees, the fix is reversible by reverting the
+two `if max(series) >= best` / `if min(series) <= best`
+short-circuits in `evaluate()`.
+
+### Test counts
+
+| File | Tests | Wallclock |
+|---|---|---|
+| `tests/test_diff_mode_e2e.py` (new) | 2 | ~1.2s |
+| `tests/test_diff_executor_signal_cleanup.py` (new) | 7 | ~0.7s |
+| `tests/test_llm_diff_hygiene.py` (new) | 14 | ~0.2s |
+| `tests/test_intra_iteration_lock_in_wins.py` (new) | 7 | ~0.3s |
+| `tests/test_diff_executor.py` (existing, still green) | 16 | ~10s |
+| `tests/test_llm_diff.py` (existing, still green) | 18 | ~0.1s |
+| `tests/test_engine_cancel.py` (existing, still green) | 1 | ~2s |
+| **Total new** | **30** | **~2.4s** |
+
+### ADRs added
+
+- ADR-024: DiffExecutor signal-handler restore + sidecar marker.
+- ADR-025: LLMDiffPolicy conversation reset + anti-repeat.
+- ADR-026: IntraIterationGuard locks in wins.
+
+### Not changed (out of scope per hand-off)
+
+- `examples/trace-jepa/` — Phase 3 agent owns.
+- `tests/test_basilica_integration.py` — Phase 4 basilica-cleanup
+  agent owns.
+- `traces/` cleanup — same.
+
+### Anything risky needing user review before merging
+
+- **ADR-024 signal-handler chaining:** if any future code path
+  installs a SIGTERM handler INSIDE the diff-execute window, the
+  chain may not reach it. Documented in code; tests assert the
+  chaining contract for the engine's ShutdownHandler case.
+- **ADR-026 lock-in-wins:** the behaviour change is intentional
+  but contradicts the "ADR-013 plateau limitation" framing. v18-v25
+  cancellations included real wins (peak > best) that v30's
+  "max_steps capped" approach happened to avoid. The fix re-enables
+  longer-running iters that beat best then partially decay — they
+  still consume their full wallclock budget. If a future campaign
+  is wall-bounded by this, the reviewer should consider tightening
+  `controller.max_wall_time_s` rather than reverting ADR-026.
+

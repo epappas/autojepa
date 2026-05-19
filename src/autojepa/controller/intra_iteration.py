@@ -129,21 +129,44 @@ class IntraIterationGuard:
             self._thread = None
 
     def evaluate(self, series: list[float]) -> tuple[GuardDecision, str]:
-        """Decide given the metric series so far."""
+        """Decide given the metric series so far.
+
+        ADR-026: NEVER cancel an iter whose observed series already
+        beats best_value. The power-law forecaster fits a smooth curve
+        and can predict a "final dip below best" from late-stage SSL
+        noise (typical pattern: rising probe, small dip at the very end
+        of training). For a trial whose CURRENT max already exceeds the
+        run-wide best, the iter has already produced a kept-worthy
+        outcome; cancelling it throws away a real win on a forecasted
+        decay that the actual end-of-trial value contradicts. This bug
+        cost ~4 real wins in v21/v23/v24/v25 (see
+        docs/phase-2-fix-diary.md 2026-05-17 + 2026-05-19).
+        """
         best_value = self._best_value_ref.get()
         if best_value is None:
             return ("continue", "no_best_yet")
         if len(series) < max(self._cfg.min_reports_before_decide, 5):
             return ("continue", "insufficient_reports")
+
         if self._direction == "max":
+            best_f = float(best_value)
+            # Lock in wins: any observed value at-or-above best means
+            # the iter has earned a keep even if the forecaster
+            # predicts a final dip.
+            if max(series) >= best_f:
+                return ("continue", "current_already_beats_best")
             # power-law forecaster assumes minimization. Negate.
-            negated_best = -float(best_value)
+            negated_best = -best_f
             negated_series = [-v for v in series]
             if should_early_stop(negated_series, negated_best):
                 return ("cancel", "forecast_below_best")
             return ("continue", "forecast_above_best")
-        # min direction
-        if should_early_stop(series, float(best_value)):
+
+        # min direction: same lock-in guard, lower-is-better.
+        best_f = float(best_value)
+        if min(series) <= best_f:
+            return ("continue", "current_already_beats_best")
+        if should_early_stop(series, best_f):
             return ("cancel", "forecast_above_best")
         return ("continue", "forecast_below_best")
 

@@ -42,3 +42,6 @@ line.
 | [021](021-patch-not-git-apply-for-llm-diffs.md) | Use `patch --fuzz=5` (not `git apply`) for LLM-generated diffs — git apply rejects context-correct diffs with wrong line numbers | Accepted |
 | [022](022-env-overrides-for-diff-proposals.md) | Propagate engine env overrides through DiffProposal.env_overrides so AR_MODEL_DIR reaches the target adapter for diff iters | Accepted |
 | [023](023-framework-discovered-lr-scheduler.md) | Keep the framework-discovered CosineAnnealingLR scheduler in train.py — first kept LLM-diff output (v30 iter=4) | Accepted |
+| [024](024-diff-executor-signal-cleanup.md) | DiffExecutor restores mutable file on SIGTERM/SIGKILL via signal handler + sidecar marker | Accepted |
+| [025](025-llm-diff-conversation-hygiene.md) | LLMDiffPolicy resets conversation on kept-diff observation + injects anti-repeat section | Accepted |
+| [026](026-intra-iteration-lock-in-wins.md) | IntraIterationGuard never cancels an iter whose observed series already beats best (refines ADR-008/013) | Accepted |
