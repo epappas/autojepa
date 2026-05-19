@@ -272,6 +272,7 @@ if _TORCH_OK:
             dropout=dropout,
             batch_first=True,
             activation="gelu",
+            norm_first=True,
         )
         return nn.TransformerEncoder(layer, num_layers=depth)
 
@@ -314,6 +315,7 @@ if _TORCH_OK:
             self.args_proj = nn.Linear(args_hash_dim, embed_dim)
             self.pos_emb = nn.Embedding(max_events, embed_dim)
             self.encoder = _build_transformer_encoder(embed_dim, depth, n_heads)
+            self.embed_norm = nn.LayerNorm(embed_dim)
             self.norm = nn.LayerNorm(embed_dim)
             self.register_buffer("_pos_ids", torch.arange(max_events).unsqueeze(0))
 
@@ -327,7 +329,7 @@ if _TORCH_OK:
                 + self.args_proj(batch["args"].float())
             )
             e = e + self.pos_emb(self._pos_ids[:, : e.shape[1]])
-            return e
+            return self.embed_norm(e)
 
         def forward(
             self,
@@ -336,6 +338,18 @@ if _TORCH_OK:
         ) -> "torch.Tensor":
             x = self.event_embeds(batch)
             if attn_mask is not None:
+                # Guard against ALL-masked sequences (added 2026-05-19
+                # after v5 evidence: nan_loss_at_step_0 with codebook
+                # disabled + loss_finite=False). nn.MultiheadAttention's
+                # softmax over an empty set of keys produces NaN; for
+                # JEPA the CompositeMask sampler can occasionally leave
+                # a sequence with zero kept positions. Force-keep at
+                # least position 0 for any sequence with no kept tokens
+                # so attention always has at least one valid key.
+                keep_per_seq = attn_mask.sum(dim=-1)
+                if (keep_per_seq == 0).any():
+                    attn_mask = attn_mask.clone()
+                    attn_mask[keep_per_seq == 0, 0] = True
                 # nn.TransformerEncoder takes `src_key_padding_mask` where
                 # True = positions to ignore. attn_mask convention here:
                 # True = keep. Invert before passing through.
