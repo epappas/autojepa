@@ -886,8 +886,42 @@ def main() -> int:
             device=device,
         )
         total_loss = loss + CODEBOOK_LOSS_WEIGHT * codebook_loss
+        # NaN guard added 2026-05-19 after v4 evidence: training ran for
+        # 500 steps with loss=NaN, every gradient update wasted, then
+        # probe_eval's rankme svdvals crashed on NaN features. Now we
+        # detect NaN at the first step that produces it and abort the
+        # iter with a clear reason — no more 50-min silent NaN walks.
+        if not torch.isfinite(total_loss):
+            elapsed_now = time.monotonic() - t_start
+            reason = (
+                f"nan_loss_at_step_{step} "
+                f"(loss_finite={torch.isfinite(loss).item()}, "
+                f"codebook_loss_finite={torch.isfinite(codebook_loss).item() if isinstance(codebook_loss, torch.Tensor) else True}, "
+                f"lr={LEARNING_RATE}, var_w={VARIANCE_LOSS_WEIGHT})"
+            )
+            print(f"[fatal] {reason}", flush=True, file=sys.stderr)
+            _write_outcome(
+                model_dir=ARTIFACT_DIR, status="failed", metrics=last_metrics,
+                elapsed_s=elapsed_now, completed_steps=step, step_target=MAX_STEPS,
+                reason=reason,
+            )
+            return 4
         optimizer.zero_grad()
         total_loss.backward()
+        # Gradient clipping — Phase-3 v4 surfaced rapid loss divergence to
+        # NaN by step 50 with lr=3e-4 + codebook=256 + var_w=1.0. Clip at
+        # 1.0 (standard transformer training default) to keep updates
+        # bounded while the LLM is searching for a stable param region.
+        torch.nn.utils.clip_grad_norm_(
+            [p for p in student.parameters() if p.requires_grad], max_norm=1.0
+        )
+        torch.nn.utils.clip_grad_norm_(
+            [p for p in predictor.parameters() if p.requires_grad], max_norm=1.0
+        )
+        if codebook is not None:
+            torch.nn.utils.clip_grad_norm_(
+                [p for p in codebook.parameters() if p.requires_grad], max_norm=1.0
+            )
         optimizer.step()
         encoder.update_teacher()
         encoder.update_ema_coefficient(step, MAX_STEPS)
