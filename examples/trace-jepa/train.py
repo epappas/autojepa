@@ -108,6 +108,16 @@ CODEBOOK_LOSS_WEIGHT = float(_hp("codebook_loss_weight", 0.0))
 FUTURE_BLOCK_WEIGHT = float(_hp("future_block_weight", 1.0))
 MULTI_BLOCK_WEIGHT = float(_hp("multi_block_weight", 0.5))
 
+# VICReg-style variance penalty on the predictor output. Without this,
+# the plain MSE-against-EMA-target loss collapses immediately to constant
+# output (rankme=1.0, var<1e-3) — v1 evidence 2026-05-19: every iter
+# probe_auroc=0.502 (random) because target encoder mirrored a constant
+# student. variance_loss_weight=1.0 is enough to break the trivial
+# fixed-point per VICReg paper §3.2; the LLM can tune via the search
+# axis. Set to 0.0 to recover the pre-2026-05-19 broken-baseline behaviour.
+VARIANCE_LOSS_WEIGHT = float(_hp("variance_loss_weight", 1.0))
+VARIANCE_LOSS_EPS = float(_hp("variance_loss_eps", 1e-2))
+
 PROBE_EVAL_EVERY_N_STEPS = int(_hp("probe_eval_every_n_steps", 500))
 CANARY_LOSS_THRESHOLD = float(_hp("canary_loss_threshold", 0.5))
 CANARY_MAX_STEPS = int(_hp("canary_max_steps", 200))
@@ -486,6 +496,17 @@ def _train_step(
         # Fallback: avoid an empty loss.backward (degenerate sample).
         losses.append(F.mse_loss(pred, target_features))
     loss = torch.stack(losses).mean()
+    # VICReg variance penalty on the flattened predictor output. The plain
+    # MSE-against-EMA-target loop has a trivial fixed point at "everything
+    # is the same constant vector" (predictor matches target, MSE=0, both
+    # encoders collapsed). The penalty forces per-feature-dim std above
+    # sqrt(VARIANCE_LOSS_EPS) across the batch — see VICReg paper §3.2.
+    # Defaults: weight=1.0, eps=1e-2. LLM can tune both via the search.
+    if VARIANCE_LOSS_WEIGHT > 0.0:
+        pred_flat = pred.reshape(-1, pred.shape[-1])
+        std = pred_flat.std(dim=0)
+        var_penalty = F.relu(VARIANCE_LOSS_EPS - std).mean()
+        loss = loss + VARIANCE_LOSS_WEIGHT * var_penalty
     return loss, code_loss
 
 

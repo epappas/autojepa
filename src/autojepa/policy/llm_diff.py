@@ -351,9 +351,17 @@ class LLMDiffPolicy:
                 return DiffProposal(diff=diff, rationale="llm-diff")
 
             except Exception as exc:
-                logger.debug(
-                    "LLM diff attempt %d/%d failed: %s",
-                    attempt + 1, _MAX_CORRECTION_RETRIES + 1, exc,
+                # Promoted from debug -> warning 2026-05-19 after Phase-3
+                # v1 surfaced "LLM diff policy failed after 3 attempts,
+                # falling back to greedy" with no detail on what the 3
+                # failures actually were. Without the exception type +
+                # message, post-mortems have to add print statements and
+                # rerun. Including type(exc).__name__ makes HTTPError vs
+                # ValueError vs JSONDecodeError grep-able immediately.
+                logger.warning(
+                    "LLM diff attempt %d/%d failed: %s: %s",
+                    attempt + 1, _MAX_CORRECTION_RETRIES + 1,
+                    type(exc).__name__, exc,
                 )
                 if attempt < _MAX_CORRECTION_RETRIES:
                     messages.append({"role": "assistant", "content": raw})

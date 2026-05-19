@@ -75,6 +75,12 @@ policy:
     codebook_loss_weight: [0.0, 0.1, 0.5, 1.0]
     future_block_weight: [0.5, 1.0, 2.0]
     multi_block_weight: [0.0, 0.5, 1.0]
+    # Added 2026-05-19 after v1 (collapsed-baseline v1) — without a
+    # variance penalty the JEPA loss has a trivial fixed point at
+    # constant-output collapse (probe_auroc=0.502 random). Default
+    # in train.py is 1.0 which empirically breaks the collapse;
+    # 0.0 reproduces v1 broken-baseline behaviour for ablation.
+    variance_loss_weight: [0.5, 1.0, 5.0]
     probe_eval_every_n_steps: [500]
   # Migrated 2026-05-19 from Chutes/DeepSeek-V3 to Claude Sonnet 4.6 via
   # OpenRouter — same migration Phase-2 (ijepa-cifar10) made on
