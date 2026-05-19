@@ -141,10 +141,12 @@ def test_llm_diff_example_produces_real_best_value(
 #
 # `examples/ijepa-cifar10` lands in Phase-2 — it requires an A100 to
 # train but `autojepa validate` exits 0 with stub credentials, so it
-# is a valid Tier-2 entry. Phase-3 `examples/trace-jepa` will be added
-# here when it lands.
+# is a valid Tier-2 entry. `examples/trace-jepa` is the Phase-3 entry:
+# the synthetic-agent-trace pretraining + linear-probe-AUROC campaign
+# (writeup §11) — same Basilica target shape, validate-path only in CI.
 TIER2_VALIDATE_ONLY: list[str] = [
     "examples/ijepa-cifar10",
+    "examples/trace-jepa",
 ]
 
 
