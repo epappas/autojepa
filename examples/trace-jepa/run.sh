@@ -8,8 +8,9 @@
 #   ./run.sh local              run a 1-iter campaign locally (target=command)
 #   ./run.sh basilica           run the full 30-iter campaign on Basilica
 #
-# Requires: autojepa installed with [jepa] extra, plus CHUTES_API_KEY for
-# LLM-backed campaign modes (validate / prepare / smoke do not need it).
+# Requires: autojepa installed with [jepa] extra, plus OPENROUTER_API_KEY
+# for the LLM-backed campaign mode (validate / prepare / smoke don't need
+# it). BASILICA_API_TOKEN required only for the basilica mode.
 set -euo pipefail
 
 MODE="${1:-validate}"
@@ -37,9 +38,15 @@ case "$MODE" in
       --override controller.max_iterations=1
     ;;
   basilica)
-    : "${CHUTES_API_KEY:?CHUTES_API_KEY must be set for the LLM-backed campaign}"
+    : "${OPENROUTER_API_KEY:?OPENROUTER_API_KEY must be set for the Claude/OpenRouter LLM policy}"
     : "${BASILICA_API_TOKEN:?BASILICA_API_TOKEN must be set for the GPU target}"
-    uv run autojepa run "$CONFIG"
+    # Use deploy.py per Phase-2 pattern: it base64-encodes train.py +
+    # prepare.py and injects them into /app/ via setup_cmd. Plain
+    # `autojepa run` would only install the autojepa wheel (which
+    # ships src/, not examples/) and train_cmd would fail with
+    # "No such file: /app/train.py" inside the container.
+    SHA=$(git -C "$REPO_ROOT" rev-parse HEAD)
+    exec uv run python "$HERE/deploy.py" --git-ref "$SHA"
     ;;
   *)
     echo "usage: $0 {validate|prepare|smoke|local|basilica}" >&2
