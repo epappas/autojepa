@@ -57,6 +57,7 @@ import os
 import sys
 import tarfile
 import time
+import traceback
 from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
@@ -647,6 +648,24 @@ def main() -> int:
 
     t_start = time.monotonic()
 
+    # Diagnostic: dump AR_PARAM_* env vars so we can confirm what
+    # actually reached the container. trace-jepa v1/v3 surfaced a
+    # discrepancy where Claude proposed codebook_size=256 but the
+    # container's CODEBOOK_SIZE read 0 — either the env var isn't
+    # being set (basilica adapter bug) or the var is being read
+    # before env is populated. The dump uses no `key=value` patterns
+    # in the value strings to avoid the BasilicaTarget._parse_metrics
+    # collision (Phase-2 v27 evidence; see ADR-020 commentary).
+    _ar_param_keys = sorted(k for k in os.environ if k.startswith("AR_PARAM_"))
+    print(f"[env-dump] {len(_ar_param_keys)} AR_PARAM_* keys present", flush=True)
+    for _k in _ar_param_keys:
+        # Truncate long values (AR_PARAMS_JSON, AR_MODIFIED_SOURCE)
+        _v = os.environ[_k]
+        if len(_v) > 80:
+            _v = _v[:77] + "..."
+        # Use ' -> ' separator (NOT '=') to avoid metric-parser collision.
+        print(f"  [env-dump] {_k} -> {_v}", flush=True)
+
     from autojepa.eval.collapse import latent_variance, rankme
     from autojepa.masking import (
         CompositeMask,
@@ -815,10 +834,42 @@ def main() -> int:
     train_shards = [DATA_DIR / s for s in manifest["train_shards"]]
     print(f"pretraining: {len(train_shards)} shards x {manifest['shard_size']} sessions", flush=True)
 
+    # Loud-on-stall instrumentation ported from Phase-2 ijepa-cifar10
+    # train.py 2026-05-18 after v3 surfaced silent pod restarts where
+    # training never emitted past step=0. SIGTERM handler distinguishes
+    # basilica TTL kills from Python hangs; heartbeats narrow the kill
+    # window to <50 steps; probe-eval try/except surfaces OOM/hangs
+    # there explicitly. All prints use ' | ' separators not 'key=value'
+    # to avoid BasilicaTarget._parse_metrics collision (see Phase-2
+    # v27 evidence in docs/phase-2-fix-diary.md).
+    import signal as _signal
+
     step = 0
     best_probe_auroc = 0.0
     last_metrics: dict[str, float] = {}
+
+    def _on_sigterm(signum: int, frame: object) -> None:
+        print(
+            f"[fatal] SIGTERM received at step {step} (basilica TTL or pod kill); "
+            f"writing failure outcome and exiting",
+            flush=True, file=sys.stderr,
+        )
+        try:
+            _write_outcome(
+                model_dir=ARTIFACT_DIR, status="failed", metrics=last_metrics,
+                elapsed_s=time.monotonic() - t_start,
+                completed_steps=step, step_target=MAX_STEPS,
+                reason=f"sigterm_at_step_{step}",
+            )
+        except Exception:
+            pass
+        sys.exit(143)
+
+    _signal.signal(_signal.SIGTERM, _on_sigterm)
+
     iter_loader = _shard_iterator(train_shards, batch_size=BATCH_SIZE, tokenizer=tokenizer)
+    last_heartbeat_t = time.monotonic()
+    print(f"[pretrain] starting loop, max_steps {MAX_STEPS}, batch {BATCH_SIZE}", flush=True)
 
     while step < MAX_STEPS:
         try:
@@ -842,13 +893,39 @@ def main() -> int:
         encoder.update_ema_coefficient(step, MAX_STEPS)
         step += 1
 
-        if step % PROBE_EVAL_EVERY_N_STEPS == 0 or step == MAX_STEPS:
-            probe_auroc, collapse = _eval_probe_and_collapse(
-                manifest=manifest,
-                encoder=encoder,
-                tokenizer=tokenizer,
-                device=device,
+        if step % 50 == 0:
+            now = time.monotonic()
+            dt = now - last_heartbeat_t
+            last_heartbeat_t = now
+            mem_gb = (
+                torch.cuda.memory_allocated() / 1e9
+                if torch.cuda.is_available() else 0.0
             )
+            print(
+                f"[heartbeat] step {step}/{MAX_STEPS} | "
+                f"loss {float(loss.item()):.4f} | "
+                f"took {dt:.1f}s | mem {mem_gb:.2f}GB",
+                flush=True,
+            )
+
+        if step % PROBE_EVAL_EVERY_N_STEPS == 0 or step == MAX_STEPS:
+            print(f"[probe] starting at step {step}", flush=True)
+            try:
+                probe_auroc, collapse = _eval_probe_and_collapse(
+                    manifest=manifest,
+                    encoder=encoder,
+                    tokenizer=tokenizer,
+                    device=device,
+                )
+            except BaseException as exc:
+                print(
+                    f"[probe] FAILED at step {step}: "
+                    f"{type(exc).__name__}: {exc}",
+                    flush=True, file=sys.stderr,
+                )
+                traceback.print_exc()
+                raise
+            print(f"[probe] ok at step {step}; probe_auroc={probe_auroc:.4f}", flush=True)
             best_probe_auroc = max(best_probe_auroc, probe_auroc)
             last_metrics = {
                 "probe_auroc": float(probe_auroc),
