@@ -32,6 +32,75 @@ logger = logging.getLogger(__name__)
 
 _MAX_CONVERSATION_PAIRS = 10
 _MAX_CORRECTION_RETRIES = 2
+_MAX_PRIOR_DIFF_SUMMARIES = 8
+
+
+def _summarize_diff(diff: str, *, max_len: int = 120) -> str:
+    """One-line gist of a diff for the anti-repeat prompt section.
+
+    Picks the first non-context added line (or removed line if none),
+    strips the leading +/- and pads short lines so the LLM can recognise
+    the distinct approach (CosineAnnealingLR vs VICReg vs partial-credit
+    reward etc.) without being overwhelmed by full hunks.
+    """
+    if not diff:
+        return "<empty>"
+    for raw in diff.splitlines():
+        if raw.startswith("+") and not raw.startswith("+++"):
+            cleaned = raw[1:].strip()
+            if cleaned and not cleaned.startswith("#"):
+                return cleaned[:max_len]
+    for raw in diff.splitlines():
+        if raw.startswith("-") and not raw.startswith("---"):
+            cleaned = raw[1:].strip()
+            if cleaned:
+                return f"-{cleaned[:max_len - 1]}"
+    return "<context-only>"
+
+
+def _extract_prior_diff_summaries(history: list[dict]) -> list[str]:
+    """Pull a deduped list of recent diff approaches from history.
+
+    Reads `params['diff']` populated by `_hybrid_extractor` for diff
+    iters. Skips non-diff iters and empty diffs. Returns most-recent
+    first, deduped on the gist string to avoid spamming the prompt
+    when the LLM has been hammering the same approach.
+    """
+    seen: set[str] = set()
+    summaries: list[str] = []
+    for entry in reversed(history):
+        params = entry.get("params") or {}
+        if params.get("_type") != "diff":
+            continue
+        diff = params.get("diff")
+        if not isinstance(diff, str) or not diff.strip():
+            continue
+        gist = _summarize_diff(diff)
+        if gist in seen:
+            continue
+        seen.add(gist)
+        status = entry.get("status", "?")
+        decision = entry.get("decision", "?")
+        iter_idx = entry.get("iter", "?")
+        summaries.append(
+            f"iter={iter_idx} status={status} decision={decision} :: {gist}"
+        )
+        if len(summaries) >= _MAX_PRIOR_DIFF_SUMMARIES:
+            break
+    return summaries
+
+
+def _last_kept_diff_iter(history: list[dict]) -> int | None:
+    """Return the iter index of the most recent kept diff, or None."""
+    for entry in reversed(history):
+        params = entry.get("params") or {}
+        if params.get("_type") != "diff":
+            continue
+        if entry.get("decision") == "keep":
+            iter_idx = entry.get("iter")
+            if isinstance(iter_idx, int):
+                return iter_idx
+    return None
 
 
 _SYSTEM_PROMPT = (
@@ -77,6 +146,7 @@ def _format_diff_prompt(
     metric: str,
     direction: str,
     program: str = "",
+    prior_approaches: list[str] | None = None,
 ) -> str:
     lines: list[str] = []
     if program:
@@ -118,6 +188,23 @@ def _format_diff_prompt(
         lines.append("Recent training logs:")
         for log_entry in recent_logs:
             lines.append(f"  {log_entry}")
+        lines.append("")
+
+    if prior_approaches:
+        # Anti-repeat guard. v30 iters 9, 10, 11 all proposed the same
+        # CosineAnnealingLR approach after iter=4 was kept because the
+        # conversation anchored on the success and refused to explore.
+        # See docs/phase-2-fix-diary.md 2026-05-19 / ADR-025.
+        lines.append(
+            "PREVIOUSLY PROPOSED APPROACHES (DO NOT propose any of these again):"
+        )
+        for approach in prior_approaches:
+            lines.append(f"  - {approach}")
+        lines.append(
+            "If your next idea matches any of the above, you MUST pick a "
+            "different one (e.g. a different loss formulation, different "
+            "masking strategy, different EMA schedule, different optimizer)."
+        )
         lines.append("")
 
     lines.append(
@@ -193,6 +280,7 @@ class LLMDiffPolicy:
         self._direction = direction
         self._filename = os.path.basename(mutable_file)
         self._conversation: list[dict] = []
+        self._last_seen_kept_diff_iter: int | None = None
 
     def propose(self, state: dict) -> DiffProposal:
         history: list[dict] = state.get("history", [])
@@ -211,6 +299,22 @@ class LLMDiffPolicy:
             logger.warning("LLM diff policy: no source in state, falling back to greedy")
             return self._greedy_fallback()
 
+        # ADR-025 hygiene: after a kept diff lands, the patched source
+        # is the new baseline — any conversation history built on top of
+        # the OLD baseline is now misleading. Clear conversation once
+        # per newly-observed kept-diff iter so the LLM re-evaluates from
+        # scratch instead of anchoring on its previous success and
+        # proposing trivial variations of the same approach.
+        last_kept = _last_kept_diff_iter(history)
+        if last_kept is not None and last_kept != self._last_seen_kept_diff_iter:
+            self._conversation.clear()
+            self._last_seen_kept_diff_iter = last_kept
+            logger.info(
+                "LLM diff policy: reset conversation after kept diff at iter=%d",
+                last_kept,
+            )
+
+        prior_approaches = _extract_prior_diff_summaries(history)
         user_msg = _format_diff_prompt(
             source=source,
             filename=self._filename,
@@ -218,6 +322,7 @@ class LLMDiffPolicy:
             metric=self._metric,
             direction=self._direction,
             program=program,
+            prior_approaches=prior_approaches,
         )
 
         # Build local messages for this attempt (includes conversation + new user msg).

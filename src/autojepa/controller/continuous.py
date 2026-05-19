@@ -178,10 +178,14 @@ def _run_diff_mode(
     program: str,
     manifest_config: dict,
 ) -> LoopResult:
-    from autojepa.controller.diff_executor import DiffExecutor
+    from autojepa.controller.diff_executor import DiffExecutor, recover_restore_marker
 
     assert policy_cfg.mutable_file is not None
     mutable_file = policy_cfg.mutable_file
+    # ADR-024: clean up any leftover restore marker from a SIGKILLed
+    # previous run before starting; otherwise the LLM reads a dirty
+    # source as its baseline.
+    recover_restore_marker(mutable_file)
     policy = _build_llm_diff_policy(policy_cfg, objective)
     contract = _build_contract(policy_cfg)
     executor = DiffExecutor(target, mutable_file, contract, policy_cfg.required_calls)
@@ -216,10 +220,18 @@ def _run_hybrid_mode(
     program: str,
     manifest_config: dict,
 ) -> LoopResult:
-    from autojepa.controller.diff_executor import DiffExecutor, HybridExecutor
+    from autojepa.controller.diff_executor import (
+        DiffExecutor,
+        HybridExecutor,
+        recover_restore_marker,
+    )
 
     assert policy_cfg.mutable_file is not None
     mutable_file = policy_cfg.mutable_file
+    # ADR-024: clean up any leftover restore marker from a SIGKILLed
+    # previous run before starting; otherwise the LLM reads a dirty
+    # source as its baseline.
+    recover_restore_marker(mutable_file)
     policy = _policy_from_config(policy_cfg, objective)
     contract = _build_contract(policy_cfg)
     target_exec = TargetExecutor(target)

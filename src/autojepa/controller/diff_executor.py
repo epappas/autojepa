@@ -10,9 +10,14 @@ import base64
 import logging
 import os
 import re
+import signal
 import subprocess
 import tempfile
+import threading
+from contextlib import contextmanager
 from pathlib import Path
+from types import FrameType
+from typing import Any, Callable, Iterator, Union
 
 from autojepa.controller.contract import ContractConfig, validate_diff_against_contract
 from autojepa.controller.executor import Outcome, TargetExecutor
@@ -21,6 +26,8 @@ from autojepa.sandbox.validator import validate_diff, validate_required_calls
 from autojepa.target.interface import TargetAdapter
 
 logger = logging.getLogger(__name__)
+
+SignalHandler = Union[Callable[[int, FrameType | None], Any], int, None]
 
 _GIT_ENV = {
     "GIT_AUTHOR_NAME": "autojepa",
@@ -182,6 +189,121 @@ def _rejected(reason: str, run_dir: str) -> Outcome:
     )
 
 
+# Signal-safe restore for the mutable-file write done inside execute().
+# Without this, SIGTERM/SIGINT during target.run() leaves the patched
+# diff on disk because the `try/finally` in execute() never reaches
+# its restore branch — the engine's ShutdownHandler captures SIGTERM
+# but only sets a flag; it cannot interrupt a blocked subprocess.run.
+# Subsequent iters then read this dirty state as `source` and stack
+# diffs on top. Live evidence: v30 ended with iter=12's fallback diff
+# leftover on top of iter=4's kept scheduler. See ADR-024 and
+# docs/phase-2-fix-diary.md 2026-05-19.
+#
+# Signal handlers must be installed from the main thread (Python
+# enforces this); the executor is always called from the engine's
+# main thread (DiffExecutor is not used by parallel_engine, which
+# excludes diff-mode by design — see ADR-011 in continuous.py
+# `_run_hybrid_mode`). We guard with threading.main_thread() so a
+# misuse from a worker thread becomes a clean no-op rather than a
+# crash. The restore-marker sidecar (`<mutable>.autojepa-restore`)
+# is also written so a SIGKILL/OOM-kill (uncatchable) leaves a
+# durable breadcrumb the next engine boot can recover from.
+_RESTORE_MARKER_SUFFIX = ".autojepa-restore"
+
+
+def _write_restore_marker(mutable_file: str, source: str) -> Path | None:
+    marker = Path(mutable_file).with_suffix(
+        Path(mutable_file).suffix + _RESTORE_MARKER_SUFFIX
+    )
+    try:
+        marker.write_text(source, encoding="utf-8")
+        return marker
+    except OSError as exc:
+        logger.warning("could not write restore marker: %s", exc)
+        return None
+
+
+def _clear_restore_marker(marker: Path | None) -> None:
+    if marker is None:
+        return
+    try:
+        marker.unlink(missing_ok=True)
+    except OSError as exc:
+        logger.warning("could not clear restore marker %s: %s", marker, exc)
+
+
+@contextmanager
+def _restore_on_signal(mutable_file: str, source: str) -> Iterator[Path | None]:
+    """Restore `mutable_file` to `source` if SIGTERM/SIGINT fires inside.
+
+    Yields the path to the on-disk restore marker (or None if the
+    marker write failed). The marker survives across processes so a
+    SIGKILL or container OOM-kill can be cleaned up at next boot.
+
+    Signal handlers chain to the previously-installed handlers (the
+    engine's ShutdownHandler for SIGTERM, Python default for SIGINT)
+    so shutdown semantics elsewhere in the system are preserved.
+    """
+    marker = _write_restore_marker(mutable_file, source)
+
+    is_main = threading.current_thread() is threading.main_thread()
+    prev_term: SignalHandler = None
+    prev_int: SignalHandler = None
+
+    def _handler(signum: int, frame: FrameType | None) -> None:
+        try:
+            Path(mutable_file).write_text(source, encoding="utf-8")
+            logger.warning(
+                "DiffExecutor: signal %s restored %s before chaining",
+                signal.Signals(signum).name, mutable_file,
+            )
+        except OSError as exc:
+            logger.error("DiffExecutor: restore on signal failed: %s", exc)
+        _clear_restore_marker(marker)
+        prev = prev_term if signum == signal.SIGTERM else prev_int
+        if callable(prev):
+            prev(signum, frame)
+        elif prev == signal.SIG_DFL:
+            # Re-raise default behaviour for the signal.
+            signal.signal(signum, signal.SIG_DFL)
+            os.kill(os.getpid(), signum)
+
+    if is_main:
+        prev_term = signal.signal(signal.SIGTERM, _handler)
+        prev_int = signal.signal(signal.SIGINT, _handler)
+    try:
+        yield marker
+    finally:
+        if is_main:
+            signal.signal(signal.SIGTERM, prev_term or signal.SIG_DFL)
+            signal.signal(signal.SIGINT, prev_int or signal.SIG_DFL)
+        _clear_restore_marker(marker)
+
+
+def recover_restore_marker(mutable_file: str) -> bool:
+    """Restore from a leftover sidecar marker if one exists.
+
+    Call at engine startup; returns True if a recovery happened. The
+    marker is unlinked after restore so we never double-restore.
+    """
+    marker = Path(mutable_file).with_suffix(
+        Path(mutable_file).suffix + _RESTORE_MARKER_SUFFIX
+    )
+    if not marker.exists():
+        return False
+    try:
+        original = marker.read_text(encoding="utf-8")
+        Path(mutable_file).write_text(original, encoding="utf-8")
+        marker.unlink(missing_ok=True)
+        logger.warning(
+            "DiffExecutor: recovered %s from leftover restore marker", mutable_file,
+        )
+        return True
+    except OSError as exc:
+        logger.error("DiffExecutor: marker recovery failed: %s", exc)
+        return False
+
+
 class DiffExecutor:
     """Validates a DiffProposal, applies it in-memory, and delegates to target."""
 
@@ -241,20 +363,26 @@ class DiffExecutor:
         Path(run_dir).mkdir(parents=True, exist_ok=True)
         # Write modified source to disk so local CommandTarget runs it;
         # Basilica targets receive it via AR_MODIFIED_SOURCE bootstrap.
-        Path(self._mutable_file).write_text(modified, encoding="utf-8")
-        try:
-            train_out = self._target.run(run_dir=run_dir, params=params)
-            outcome = train_out
-            if train_out.status == "ok":
-                outcome = self._target.eval(run_dir=run_dir, params=params)
-        except Exception as exc:
-            return Outcome(
-                status="failed", metrics={}, stdout="",
-                stderr=str(exc), elapsed_s=0.0, run_dir=run_dir,
-            )
-        finally:
-            # Restore original; on_keep callback persists the diff if accepted.
-            Path(self._mutable_file).write_text(source, encoding="utf-8")
+        # The signal-handler restore covers SIGTERM/SIGINT mid-run; the
+        # try/finally covers normal completion + exceptions; the
+        # restore-marker sidecar covers SIGKILL (recovered on next
+        # boot via `recover_restore_marker`).
+        with _restore_on_signal(self._mutable_file, source):
+            Path(self._mutable_file).write_text(modified, encoding="utf-8")
+            try:
+                train_out = self._target.run(run_dir=run_dir, params=params)
+                outcome = train_out
+                if train_out.status == "ok":
+                    outcome = self._target.eval(run_dir=run_dir, params=params)
+            except Exception as exc:
+                Path(self._mutable_file).write_text(source, encoding="utf-8")
+                return Outcome(
+                    status="failed", metrics={}, stdout="",
+                    stderr=str(exc), elapsed_s=0.0, run_dir=run_dir,
+                )
+            finally:
+                # Restore original; on_keep callback persists the diff if accepted.
+                Path(self._mutable_file).write_text(source, encoding="utf-8")
         return Outcome(
             status=outcome.status,
             metrics=outcome.metrics,
