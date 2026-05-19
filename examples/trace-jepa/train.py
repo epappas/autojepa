@@ -119,7 +119,17 @@ VARIANCE_LOSS_WEIGHT = float(_hp("variance_loss_weight", 1.0))
 VARIANCE_LOSS_EPS = float(_hp("variance_loss_eps", 1e-2))
 
 PROBE_EVAL_EVERY_N_STEPS = int(_hp("probe_eval_every_n_steps", 500))
-CANARY_LOSS_THRESHOLD = float(_hp("canary_loss_threshold", 0.5))
+# Bumped 2026-05-19 from 0.5 -> 5.0 after v2 evidence: with the variance
+# penalty defaulted ON (preventing trivial collapse to a constant), the
+# canary loss naturally floors around the variance-penalty term (~1.0)
+# instead of going to ~0 via collapse. The original 0.5 threshold was
+# calibrated against the broken-baseline behaviour where any model that
+# collapsed trivially passed canary (v1 evidence). Same class of
+# calibration bug as Phase-2 (commit a120b68 bumped ijepa from 0.05->0.08).
+# 5.0 is conservative — still catches NaN, ~10+ pipeline blow-ups, etc.
+# Future calibration: run a clean canary with var_w=1.0 + N=200 steps,
+# pick threshold at 3-5x the observed steady-state.
+CANARY_LOSS_THRESHOLD = float(_hp("canary_loss_threshold", 5.0))
 CANARY_MAX_STEPS = int(_hp("canary_max_steps", 200))
 
 DATA_DIR = Path(__file__).parent / "data"
